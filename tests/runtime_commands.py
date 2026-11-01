@@ -137,6 +137,16 @@ class RuntimeCommands(unittest.TestCase):
         flags,log=self.run_game(['advance','key A','wait-ms 64','advance','key A','wait-ms 64','history-close','advance'])
         self.assertEqual(log.count('HISTORY_READY'),1,log)
 
+    def test_auto_button_second_click_cancels_and_consumes(self):
+        s=self.base();s.call('GraphicLoad',13,'images\\base.png',0,0)
+        s.call('AreaSetAutoMode',13,10,10,60,40);s.call('KeyWaitFunctionSet',0x10)
+        s.call('AutoModeCancelLKey',1);s.call('AutoSpeedSet',100000)
+        s.call('StrOutNW',0,'AUTO');s.call('KeyWait');self.end(s);self.package(s)
+        flags,log=self.run_game(['click 20 20','click 20 20','quit'])
+        self.assertIn('AUTO_MODE value=1 reason=area',log)
+        self.assertIn('AUTO_MODE value=0 reason=left-click-cancel',log)
+        self.assertNotIn('ScriptExit',log,'cancel click advanced instead of repeating KeyWait')
+
     def test_load_hook_runs_above_restored_context(self):
         s=self.base();s.call('SaveDataLoadToCallScript','load-hook.yks');s.call('StrOutNW',0,'PARENT');s.call('KeyWait');s.assign('GlobalFlag',9000,18);s.call('KeyWait');self.end(s)
         hook=Script();hook.assign('GlobalFlag',9011,77);hook.call('GraphicRefresh');hook.code.append(hook.bank('GlobalFlag',9012));hook.call('NowScriptStateGet');hook.call('Return')

@@ -1,4 +1,5 @@
 #include <tuple>
+#include "yukari/translation_patch.hpp"
 #include "yukari/text_schedule.hpp"
 #include "yukari/save_preview.hpp"
 #include "yukari/runtime.hpp"
@@ -99,6 +100,7 @@ class Runtime {
     Midi midi;
     std::unique_ptr<MacCdPlayer> cd_player;
     std::unique_ptr<CdCommands> cd_commands;
+    TranslationPatch translation_patch;
     Vm vm;
     ScalarServices services;
     EngineConfig engine_config;
@@ -394,7 +396,7 @@ class Runtime {
         if(magic=="YUKARI_RUNTIME_4"||magic=="YUKARI_RUNTIME_5"||magic=="YUKARI_RUNTIME_6"||magic=="YUKARI_RUNTIME_7"||(magic=="YUKARI_RUNTIME_8"||magic=="YUKARI_RUNTIME_9")){in>>std::quoted(window_title);scene.set_title(window_title);}
         if(magic=="YUKARI_RUNTIME_5"||magic=="YUKARI_RUNTIME_6"||magic=="YUKARI_RUNTIME_7"||(magic=="YUKARI_RUNTIME_8"||magic=="YUKARI_RUNTIME_9")){uint64_t elapsed;in>>text_selection>>timed_selection>>select_layer>>select_x>>select_y>>select_width>>select_height>>select_mode>>select_normal>>select_hover>>select_read_normal>>select_read_hover>>elapsed>>select_limit>>selection_elapsed>>select_end>>std::quoted(selection_script)>>movie_volume;select_start=now-elapsed;in>>count;if(count>10000)throw std::runtime_error("invalid saved selection region count");while(count--){Region r;in>>std::quoted(r.kind)>>r.branch>>r.end>>r.fired>>r.fired_at;r.args=read_values(in);regions.push_back(std::move(r));}ServiceState clocks;in>>clocks.play_seconds>>clocks.play_started;for(auto& t:clocks.timers)in>>t;uint64_t saved_now;in>>saved_now;uint32_t shift=uint32_t(now-saved_now);for(auto& t:clocks.timers)if(t)t+=shift;clocks.play_started+=shift;services.restore(clocks);std::string playback;in>>std::quoted(playback);{Bytes state(playback.begin(),playback.end());for(const auto& source:Audio::sources_from_snapshot(state))if(sounds.count(source.id)&&(!audio.loaded(source.id)||audio.streamed(source.id)!=source.streamed||(source.streamed&&audio.stream_loop_start(source.id)!=source.loop_start))){std::vector<ResourceSource> parts;std::istringstream names(sounds.at(source.id).first);std::string part;while(std::getline(names,part,'\t'))parts.push_back(open_resource(part));audio.load_sources(source.id,parts,source.streamed,source.loop_start);}audio.restore_playback(state);}in>>auto_mode>>skip_mode>>already_mode>>ordinary_skip_mode;SettingsState state;in>>count;if(count>10000)throw std::runtime_error("invalid setting count");while(count--){std::string k;in>>std::quoted(k);auto v=read_values(in);if(v.size()!=1)throw std::runtime_error("invalid setting scalar");state.values[k]=v[0];}in>>count;if(count>10000)throw std::runtime_error("invalid setting records");while(count--){std::string k;in>>std::quoted(k);state.records[k]=read_values(in);}settings.restore(std::move(state));}
         if(magic=="YUKARI_RUNTIME_6"||magic=="YUKARI_RUNTIME_7"||(magic=="YUKARI_RUNTIME_8"||magic=="YUKARI_RUNTIME_9")){
-            std::string encoded;in>>std::quoted(encoded);text_model->restore(Bytes(encoded.begin(),encoded.end()));text_styles.clear();in>>count;if(count>1000000)throw std::runtime_error("invalid saved text style count");while(count--){uint64_t id;in>>id;text_styles[id]=read_text_style(in,magic=="YUKARI_RUNTIME_9");}uint64_t remaining;in>>next_text_style>>pending_text_index>>pending_text_slow>>remaining>>std::quoted(pending_text_location.script)>>pending_text_location.word>>count;if(count>10000)throw std::runtime_error("invalid pending text target count");pending_text.clear();while(count--){PendingText p;in>>p.id>>p.offset>>std::quoted(p.encoded);if(p.offset>p.encoded.size())throw std::runtime_error("invalid pending text offset");pending_text.push_back(std::move(p));}if(pending_text_index>pending_text.size())throw std::runtime_error("invalid pending text index");reveal_next=now+remaining;hidden_text_layers.clear();in>>count;if(count>10000)throw std::runtime_error("invalid hidden text count");while(count--){int id;in>>id;hidden_text_layers.push_back(id);}
+            std::string encoded;in>>std::quoted(encoded);text_model->restore(Bytes(encoded.begin(),encoded.end()));const auto saved_text_encoding=text_model->encoding();text_model->set_encoding(original_encoding);text_styles.clear();in>>count;if(count>1000000)throw std::runtime_error("invalid saved text style count");while(count--){uint64_t id;in>>id;text_styles[id]=read_text_style(in,magic=="YUKARI_RUNTIME_9");}uint64_t remaining;in>>next_text_style>>pending_text_index>>pending_text_slow>>remaining>>std::quoted(pending_text_location.script)>>pending_text_location.word>>count;if(count>10000)throw std::runtime_error("invalid pending text target count");pending_text.clear();while(count--){PendingText p;in>>p.id>>p.offset>>std::quoted(p.encoded);if(p.offset>p.encoded.size())throw std::runtime_error("invalid pending text offset");if(saved_text_encoding!=original_encoding&&!p.encoded.empty()){const auto prefix=p.encoded.substr(0,p.offset),suffix=p.encoded.substr(p.offset);auto converted_prefix=encode_original_text(decode(prefix,saved_text_encoding.c_str()),original_encoding.c_str());p.encoded=converted_prefix+encode_original_text(decode(suffix,saved_text_encoding.c_str()),original_encoding.c_str());p.offset=converted_prefix.size();}pending_text.push_back(std::move(p));}if(pending_text_index>pending_text.size())throw std::runtime_error("invalid pending text index");reveal_next=now+remaining;hidden_text_layers.clear();in>>count;if(count>10000)throw std::runtime_error("invalid hidden text count");while(count--){int id;in>>id;hidden_text_layers.push_back(id);}
             for(const auto& [id,f]:text_model->fonts())fonts[id]=logical_font_style(f);
         }else{
             for(const auto& [id,f]:fonts)text_model->call("DefaultFontSet",{int32_t(id),std::string{},int32_t(f.font_size),int32_t(400),int32_t(f.font_size+f.letter_spacing),int32_t(f.line_height?f.line_height:f.font_size+5)});
@@ -622,11 +624,23 @@ class Runtime {
         if(e.type==SDL_MOUSEWHEEL&&(mask&0x101)==0x101&&e.wheel.y>0){show_history();return true;}
         if(e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_LEFT){
             const int x=e.button.x,y=e.button.y;
+            // Native KeyWait consumes the left click and repeats the wait after
+            // clearing an active mode when AutoModeCancelLKey is enabled.
+            if(auto_mode&&settings.integer("AutoModeCancelLKey")){
+                auto_mode=false;
+                std::cout<<"AUTO_MODE value=0 reason=left-click-cancel\n";
+                return true;
+            }
             if((mask&1)&&areas.hit("AreaSetHistoryMode",x,y)){show_history();return true;}
             if((mask&2)&&areas.hit("AreaSetWindowErase",x,y)){erase_wait_windows();return true;}
             if((mask&0x40)&&areas.hit("AreaSetAlreadySkip",x,y)){toggle_skip(true);return true;}
             if((mask&0x20)&&areas.hit("AreaSetSkip",x,y)){toggle_skip(false);return true;}
-            if((mask&0x10)&&areas.hit(auto_mode?"AreaSetAutoModeExecute":"AreaSetAutoMode",x,y)){auto_mode=!auto_mode;return true;}
+            if((mask&0x10)&&areas.hit(auto_mode?"AreaSetAutoModeExecute":"AreaSetAutoMode",x,y)){
+                auto_mode=!auto_mode;
+                if(auto_mode&&settings.integer("ModeExclusive"))ordinary_skip_mode=already_mode=skip_mode=false;
+                std::cout<<"AUTO_MODE value="<<(auto_mode?1:0)<<" reason=area\n";
+                return true;
+            }
             if(mask&8)for(int id:areas.hit_scripts(x,y)){auto area=areas.script_area(id);if(area&&!area->script.empty()){vm.set_script_state(0);open_menu(area->script);return true;}}
         }
         if(e.type==SDL_KEYDOWN){for(int vk:virtual_keys(e.key.keysym)){
@@ -1041,12 +1055,16 @@ class Runtime {
     }
     void cancel_selection() { for(auto it=regions.rbegin();it!=regions.rend();++it)if(it->kind=="MouseKeyCase"&&Args{it->args}.n(0)==2){finish_selection(it->branch);return;} }
 public:
-    Runtime(const std::filesystem::path& directory,const std::filesystem::path& state,uint32_t seed,bool accelerated,NativeFontOptions font_options={},std::filesystem::path original_executable={})
-        :resources(directory),game_directory(directory),vm([this](const std::string& n){return parse_script(resources.read(n));}),services(ServiceHooks{
+    Runtime(const std::filesystem::path& directory,const std::filesystem::path& state,uint32_t seed,bool accelerated,NativeFontOptions font_options={},std::filesystem::path original_executable={},std::filesystem::path patch={})
+        :resources(directory),game_directory(directory),translation_patch(patch),vm([this](const std::string& n){return translation_patch.apply(parse_script(resources.read(n)),n);}),services(ServiceHooks{
             [this]{return uint32_t(now);},{},
             [this](std::string pattern){std::replace(pattern.begin(),pattern.end(),'\\','/');glob_t matches{};const auto path=(game_directory/pattern).string();bool found=false;if(glob(path.c_str(),0,nullptr,&matches)==0)for(size_t i=0;i<matches.gl_pathc;++i)if(std::filesystem::is_regular_file(matches.gl_pathv[i])){found=true;break;}globfree(&matches);return found;},
             [this](const std::string& name){return resources.contains(name);},
             [this](bool horizontal){return horizontal?scene.width():scene.height();},"CP932"}),state_dir(state),random(seed),fast(accelerated) {
+        if(!patch.empty()&&font_options.fallback_font.empty()){
+            for(const auto* candidate:{"/System/Library/Fonts/Hiragino Sans GB.ttc","/System/Library/Fonts/STHeiti Medium.ttc"})
+                if(std::filesystem::is_regular_file(candidate)){font_options.fallback_font=candidate;break;}
+        }
         scene.configure_native_fonts(std::move(font_options));
         std::optional<Bytes> ini;try{ini=resources.read("default.ini");}catch(const std::runtime_error&){}if(ini)engine_config=parse_engine_config(*ini);
         if(engine_config.sound_volume_type)audio.set_volume_type(*engine_config.sound_volume_type);if(engine_config.transition_wait_type)transition_wait_type=*engine_config.transition_wait_type;if(engine_config.skip_scroll_speed)settings.seed("SkipScrollSpeed",*engine_config.skip_scroll_speed);if(engine_config.mode_exclusive)settings.seed("ModeExclusive",int32_t(*engine_config.mode_exclusive));
@@ -1127,7 +1145,7 @@ public:
                 else if(op=="profile"){std::string label;size_t frames=0;double budget=0;action>>label>>frames;action>>budget;if(frame_profile.active())throw std::runtime_error("frame profile already active");frame_profile.begin(label,frames,budget,state_dir);}
                 else if(op=="profile-wait"){if(frame_profile.active())--action_index;}
                 else if(op=="wait-page"){uint64_t page;action>>page;if(text_pages<page)--action_index;}
-                else if(op=="click"){int x,y;action>>x>>y;if(history_mode)history_click(x,y);else if(wait==Wait::Selection)click(x,y);else {bool menu=false;for(const auto& item:configuration)if(item.first.rfind("AreaSetMouseLeftScript:",0)==0){Args b{item.second};if(b.size()>6&&x>=b.n(3)&&x<=b.n(5)&&y>=b.n(4)&&y<=b.n(6)){open_menu(b.s(1));menu=true;break;}}if(!menu)advance();}}
+                else if(op=="click"){int x,y;action>>x>>y;if(history_mode)history_click(x,y);else {SDL_Event event{};event.type=SDL_MOUSEBUTTONDOWN;event.button.button=SDL_BUTTON_LEFT;event.button.state=SDL_PRESSED;event.button.x=x;event.button.y=y;if(!system_interaction(event)){if(wait==Wait::Selection)click(x,y);else {bool menu=false;for(const auto& item:configuration)if(item.first.rfind("AreaSetMouseLeftScript:",0)==0){Args b{item.second};if(b.size()>6&&x>=b.n(3)&&x<=b.n(5)&&y>=b.n(4)&&y<=b.n(6)){open_menu(b.s(1));menu=true;break;}}if(!menu)advance();}}}}
                 else if(op=="key"){std::string name;std::getline(action,name);if(!name.empty()&&name[0]==' ')name.erase(name.begin());auto code=SDL_GetKeyFromName(name.c_str());if(code==SDLK_UNKNOWN)throw std::runtime_error("invalid action key name");SDL_Event event{};event.type=SDL_KEYDOWN;event.key.state=SDL_PRESSED;event.key.keysym.sym=code;event.key.keysym.scancode=SDL_GetScancodeFromKey(code);SDL_PushEvent(&event);event.type=SDL_KEYUP;event.key.state=SDL_RELEASED;SDL_PushEvent(&event);}
                 else if(op=="input"){std::getline(action,input_value);if(!input_value.empty()&&input_value[0]==' ')input_value.erase(input_value.begin());if(wait!=Wait::Input)throw std::runtime_error("input action without dialog");finish_input(true);}
                 else if(op=="history")show_history();else if(op=="history-close")close_history();else if(op=="history-action"){int label;action>>label;history_action(label);}else if(op=="hover"){int x,y;action>>x>>y;if(history_mode)history_hover_at(x,y);else hover_at(x,y);}else if(op=="advance"){if(history_mode)history_action(3);else advance();}else if(op=="cancel"){if(history_mode)history_action(7);else if(wait==Wait::Input)finish_input(false);else cancel_selection();}
@@ -1147,7 +1165,7 @@ public:
             if(false&&wait==Wait::Selection&&!collection&&left_down){for(auto it=regions.rbegin();it!=regions.rend();++it)if(it->kind=="MouseKeyCase"&&Args{it->args}.n(0)==1&&inside(*it,mouse_x,mouse_y)){vm.choose(it->branch);wait=Wait::None;collection=false;break;}}
             if(pending_restart){auto entry=*pending_restart;pending_restart.reset();restart_engine(entry);}
             if(!pending_menu.empty()) {menu_vm=vm.snapshot();menu_runtime=runtime_state();menu_thumbnail=scene.thumbnail();menu_native_vm=vm.export_original();menu_native_scene=native_scene();auto name=pending_menu;pending_menu.clear();vm.call(name,true);in_menu=true;wait=Wait::None;}
-            if(wait==Wait::Save){if(pending_subcall||vm.pending_subcall()){menu_vm=vm.snapshot_after_subcall();{auto old_wait=wait;wait=Wait::None;menu_runtime=runtime_state();wait=old_wait;}menu_thumbnail=scene.thumbnail();{Vm checkpoint([this](const std::string& name){return parse_script(resources.read(name));});checkpoint.restore(menu_vm);menu_native_vm=checkpoint.export_original();}menu_native_scene=native_scene();{const bool old_menu=in_menu;in_menu=true;save_slot(0,"","savedata.---");in_menu=old_menu;}pending_subcall=false;vm.resume();wait=Wait::None;}else{vm.resume(int32_t(1));wait=Wait::None;save_slot(pending_slot,pending_comment);}}
+            if(wait==Wait::Save){if(pending_subcall||vm.pending_subcall()){menu_vm=vm.snapshot_after_subcall();{auto old_wait=wait;wait=Wait::None;menu_runtime=runtime_state();wait=old_wait;}menu_thumbnail=scene.thumbnail();{Vm checkpoint([this](const std::string& name){return translation_patch.apply(parse_script(resources.read(name)),name);});checkpoint.restore(menu_vm);menu_native_vm=checkpoint.export_original();}menu_native_scene=native_scene();{const bool old_menu=in_menu;in_menu=true;save_slot(0,"","savedata.---");in_menu=old_menu;}pending_subcall=false;vm.resume();wait=Wait::None;}else{vm.resume(int32_t(1));wait=Wait::None;save_slot(pending_slot,pending_comment);}}
             if(wait==Wait::Load){load_slot(pending_slot,force_native);if(load_to_draw_stop){snapshot();drawing=false;}}
             bool completed=false;
             if(wait==Wait::Time||wait==Wait::CdTime)completed=now>=deadline;
@@ -1197,16 +1215,24 @@ public:
 }
 int play_game(int argc,char** argv) {
     bool require_gpu=false,force_native=false,until=false,fast=false,mute=false,trace=false,start_new=false,stop_text=false;int advances=0,load_initial=-1;uint64_t timeout=0;uint32_t seed=std::random_device{}();
-    NativeFontOptions font_options;std::string encoding="CP932";std::filesystem::path original_executable,action_file,screenshot,state=std::filesystem::current_path()/".yukari";int hx=-1,hy=-1;
+    NativeFontOptions font_options;std::string encoding="CP932";bool encoding_explicit=false;std::filesystem::path patch,original_executable,action_file,screenshot,state=std::filesystem::current_path()/".yukari";int hx=-1,hy=-1;
     for(int i=3;i<argc;++i){std::string a=argv[i];
-        if(a=="--font-directory"&&i+1<argc)font_options.font_directory=argv[++i];else if(a=="--gdi-cache"&&i+1<argc)font_options.gdi_cache_directory=argv[++i];else if(a=="--require-gdi-capture")font_options.require_gdi_capture=true;else if(a=="--require-gpu")require_gpu=true;else if(a=="--load-original-slot"&&i+1<argc){load_initial=std::stoi(argv[++i]);force_native=true;}else if(a=="--original-encoding"&&i+1<argc){encoding=argv[++i];if(encoding!="CP932"&&encoding!="CP936")throw std::runtime_error("original encoding must be CP932 or CP936");}else if(a=="--load-slot"&&i+1<argc)load_initial=std::stoi(argv[++i]);else if(a=="--actions"&&i+1<argc)action_file=argv[++i];else if(a=="--new-game")start_new=true;else if(a=="--until-text")stop_text=true;else if(a=="--advance"&&i+1<argc)advances=std::stoi(argv[++i]);else if(a=="--until-title")until=true;else if(a=="--fast")fast=true;else if(a=="--mute")mute=true;else if(a=="--trace")trace=true;
+        if(a=="--font-directory"&&i+1<argc)font_options.font_directory=argv[++i];else if(a=="--gdi-cache"&&i+1<argc)font_options.gdi_cache_directory=argv[++i];else if(a=="--require-gdi-capture")font_options.require_gdi_capture=true;else if(a=="--require-gpu")require_gpu=true;else if(a=="--load-original-slot"&&i+1<argc){load_initial=std::stoi(argv[++i]);force_native=true;}else if(a=="--original-encoding"&&i+1<argc){encoding=argv[++i];encoding_explicit=true;if(encoding!="CP932"&&encoding!="CP936")throw std::runtime_error("original encoding must be CP932 or CP936");}else if(a=="--load-slot"&&i+1<argc)load_initial=std::stoi(argv[++i]);else if(a=="--actions"&&i+1<argc)action_file=argv[++i];else if(a=="--new-game")start_new=true;else if(a=="--until-text")stop_text=true;else if(a=="--advance"&&i+1<argc)advances=std::stoi(argv[++i]);else if(a=="--until-title")until=true;else if(a=="--fast")fast=true;else if(a=="--mute")mute=true;else if(a=="--trace")trace=true;
+        else if(a=="--translation-patch"&&i+1<argc)patch=argv[++i];
         else if(a=="--original-exe"&&i+1<argc)original_executable=argv[++i];
         else if(a=="--screenshot"&&i+1<argc)screenshot=argv[++i];else if(a=="--state-dir"&&i+1<argc)state=argv[++i];
         else if(a=="--max-ms"&&i+1<argc)timeout=std::stoull(argv[++i]);else if(a=="--seed"&&i+1<argc)seed=uint32_t(std::stoul(argv[++i]));
         else if(a=="--hover"&&i+2<argc){hx=std::stoi(argv[++i]);hy=std::stoi(argv[++i]);}
         else throw std::runtime_error("invalid play argument: "+a);
     }
-    Runtime runtime(argv[2],state,seed,fast,font_options,original_executable);
+    const bool automatic_patch=patch.empty();
+    patch=find_translation_patch(argv[2],patch);
+    if(!patch.empty()){
+        const TranslationPatch metadata(patch);
+        if(!encoding_explicit&&metadata.encoding())encoding=*metadata.encoding();
+        std::cout<<"TRANSLATION_PATCH path="<<patch.string()<<" automatic="<<(automatic_patch?1:0)<<" encoding="<<encoding<<"\n";
+    }
+    Runtime runtime(argv[2],state,seed,fast,font_options,original_executable,patch);
     return runtime.run(require_gpu,force_native,encoding,load_initial,action_file,until,screenshot,timeout,mute,trace,hx,hy,start_new,stop_text,advances);
 }
 }

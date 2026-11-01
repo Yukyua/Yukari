@@ -15,6 +15,22 @@ int32_t subtract(int32_t a,int32_t b){uint32_t bits=uint32_t(a)-uint32_t(b);int3
 std::string nul_prefix(std::string s){auto n=s.find('\0');if(n!=std::string::npos)s.resize(n);return s;}
 }
 TextModel::TextModel(TextModelHooks h,std::string e):hooks_(std::move(h)),encoding_(std::move(e)){}
+void TextModel::set_encoding(std::string encoding){
+    if(encoding==encoding_)return;
+    TextModel candidate=*this;
+    auto convert=[&](std::string& value){
+        if(!value.empty())value=encode_original_text(decode(value,encoding_.c_str()),encoding.c_str());
+    };
+    convert(candidate.rules_.kinsoku_pairs);convert(candidate.rules_.word_run_pairs);
+    convert(candidate.rules_.suppress_after_rollback);convert(candidate.rules_.indent_space);
+    for(auto& value:candidate.rules_.hanging_prefixes)convert(value);
+    for(auto& [id,layer]:candidate.layers_){
+        (void)id;convert(layer.pending_output);
+        for(auto& record:layer.records)if(record.kind==3)convert(record.encoded);
+    }
+    candidate.encoding_=std::move(encoding);
+    *this=std::move(candidate);
+}
 TextLayerState& TextModel::layer(int32_t id){return layers_[id];}
 void TextModel::metrics(TextLayerState& l){auto f=fonts_.find(l.font);if(f==fonts_.end())throw std::runtime_error("text layout needs configured font metrics");l.flow.cell_width=f->second.cell_width;l.flow.line_height=f->second.line_height;}
 void TextModel::glyph(int32_t id,const std::string& bytes,bool dbcs,int32_t w,int32_t h){

@@ -51,7 +51,8 @@ struct TextModelHooks {
 class TextModel {
 public:
     explicit TextModel(TextModelHooks hooks={},std::string encoding="CP932");
-    void set_encoding(std::string encoding){encoding_=std::move(encoding);}
+    void set_encoding(std::string encoding);
+    const std::string& encoding()const{return encoding_;}
     TextLayerState& layer(int32_t id);
     const std::map<int32_t,TextLayerState>& layers()const{return layers_;}
     void erase_layer(int32_t id){layers_.erase(id);}

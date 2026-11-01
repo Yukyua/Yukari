@@ -139,6 +139,7 @@ std::vector<uint32_t> codepoints(const std::string& text) {
 }
 struct TextRasterizer {
     NativeFontRasterizer native_fonts;
+    std::filesystem::path default_font;
     FT_Library library{};
     uint64_t cache_hits{},rasterizations{};
     std::map<std::filesystem::path, FT_Face> faces;
@@ -165,7 +166,8 @@ struct TextRasterizer {
     }
     std::shared_ptr<const NativeFontBitmap> native_cell(const std::string& text,const TextStyle& style){
         const uint32_t foreground=uint32_t(style.color.r)|(uint32_t(style.color.g)<<8)|(uint32_t(style.color.b)<<16);
-        return native_fonts.rasterize(text,style.font_path.empty()?Scene::default_font_path():style.font_path,*style.native_font,foreground);
+        const auto& fallback=style.font_path.empty()?default_font:style.font_path;
+        return native_fonts.rasterize(text,fallback.empty()?Scene::default_font_path():fallback,*style.native_font,foreground);
     }
     Surface native_bitmap(const NativeFontBitmap& cell){
         const auto& color=cell.planes.color;const auto& mask=cell.planes.transparency;
@@ -189,7 +191,8 @@ struct TextRasterizer {
             style.line_height < 0 || style.line_height > 4096 || style.letter_spacing < -512 || style.letter_spacing > 512 ||
             style.shadow_offset.x < -512 || style.shadow_offset.x > 512 || style.shadow_offset.y < -512 || style.shadow_offset.y > 512)
             throw std::runtime_error("text layout exceeds limits");
-        const auto path = style.font_path.empty() ? Scene::default_font_path() : style.font_path;
+        const auto path = style.font_path.empty() ?
+            (default_font.empty()?Scene::default_font_path():default_font) : style.font_path;
         auto found = faces.find(path);
         if (found == faces.end()) {
             FT_Face face{};
@@ -904,7 +907,7 @@ struct Scene::Impl {
 Scene::Scene(int width, int height, std::string title) : impl_(std::make_unique<Impl>(width, height, title)) {}
 Scene::~Scene() = default;
 void Scene::set_title(const std::string& title) { SDL_SetWindowTitle(impl_->window.get(), title.c_str()); }
-void Scene::configure_native_fonts(NativeFontOptions options){impl_->text_layouts.clear();if(!impl_->text_rasterizer)impl_->text_rasterizer=std::make_unique<TextRasterizer>();impl_->text_rasterizer->native_fonts.configure(std::move(options));}
+void Scene::configure_native_fonts(NativeFontOptions options){impl_->text_layouts.clear();if(!impl_->text_rasterizer)impl_->text_rasterizer=std::make_unique<TextRasterizer>();impl_->text_rasterizer->default_font=options.fallback_font;impl_->text_rasterizer->native_fonts.configure(std::move(options));}
 void Scene::load(int id, Bytes bytes, int x, int y, const Bytes& extra_mask) {
     auto image=impl_->resource_image(bytes,extra_mask);
     impl_->image(id,std::move(image),x,y);

@@ -100,6 +100,32 @@ void suspended_menu_roundtrip() {
     Vm incompatible(loader({{"root", changed}, {"menu", menu.script}}));
     rejects([&] { incompatible.restore(root_snapshot); });
 }
+void translation_patch_legacy_snapshot() {
+    Program source;
+    const auto literal = source.element(5, "original text");
+    source.call("Observe", {literal});
+    source.call("Return");
+    Vm original(loader({{"story", source.script}}));
+    original.start("story");
+    auto legacy = original.snapshot();
+    // Version 9 used the displayed literal for the source fingerprint. An
+    // unpatched save therefore carries the original-text identity.
+    legacy[8] = 9; legacy[9] = legacy[10] = legacy[11] = 0;
+
+    auto translated = source.script;
+    translated.elements[literal].source_text = translated.elements[literal].text;
+    translated.elements[literal].text = "translated text";
+    Vm patched(loader({{"story", translated}}));
+    std::string observed;
+    patched.set_host([&](const HostCall& call) -> std::optional<HostResult> {
+        check(call.function == "Observe", "unexpected translated snapshot host call");
+        observed = std::get<std::string>(call.arguments.at(0));
+        return HostResult{};
+    });
+    patched.restore(legacy);
+    check(patched.run() == VmStatus::Halted, "legacy pre-patch snapshot did not resume");
+    check(observed == "translated text", "legacy snapshot restored stale untranslated literals");
+}
 void selection_roundtrip() {
     Program p;
     const auto outer = p.label("{"), closing = p.label("}"), branch = p.label("{"), end = p.label("}");
@@ -269,6 +295,7 @@ void native_metadata_rewrite() {
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"save codec", codec}, {"suspended menu snapshot", suspended_menu_roundtrip},
+        {"translation patch legacy snapshot", translation_patch_legacy_snapshot},
         {"selection snapshot", selection_roundtrip}, {"mutable script snapshot", data_alias_roundtrip},
         {"original header inspection", original_header_only},
         {"native VM roundtrip", native_vm_roundtrip},

@@ -82,14 +82,15 @@ uint64_t state_hash(const Bytes& data, size_t offset = 0) {
     for (size_t i = offset; i < data.size(); ++i) result = (result ^ data[i]) * 1099511628211ULL;
     return result;
 }
-uint64_t source_identity(const Script& script) {
+uint64_t source_identity(const Script& script, bool translated = false) {
     uint64_t hash = 14695981039346656037ULL;
     auto byte = [&](uint8_t n) { hash = (hash ^ n) * 1099511628211ULL; };
     auto number = [&](uint64_t n) { for (unsigned i = 0; i < 8; ++i) byte(uint8_t(n >> (i*8))); };
     auto text = [&](const std::string& value) { number(value.size()); for (unsigned char c : value) byte(c); };
     number(script.max_locals); number(script.encrypted); number(script.elements.size());
     for (const auto& e : script.elements) {
-        number(e.type); number(e.a); number(e.b); number(e.c); number(uint32_t(e.value)); text(e.text);
+        number(e.type); number(e.a); number(e.b); number(e.c); number(uint32_t(e.value));
+        text(!translated && !e.source_text.empty() ? e.source_text : e.text);
     }
     number(script.instructions.size());
     for (const auto& ins : script.instructions) {
@@ -192,6 +193,7 @@ struct Vm::Impl {
         uint32_t pc = 0, end = 0;
         Value returned{};
         uint64_t source_hash{};
+        uint64_t translated_source_hash{};
         Bytes native_header;
         std::optional<uint32_t> native_next;
         bool subcall=false;
@@ -260,7 +262,22 @@ struct Vm::Impl {
         f->name = name;
         f->script = loader(name);
         f->source_hash = source_identity(f->script);
-        if (embedded) f->script = *embedded;
+        f->translated_source_hash = source_identity(f->script, true);
+        if (embedded) {
+            auto current = std::move(f->script);
+            f->script = *embedded;
+            if (f->script.elements.size() == current.elements.size()) {
+                // Script literals are immutable execution input. Always use
+                // the current loader's text so a pre-patch save resumes with
+                // the active translation while retaining mutable data bytes.
+                for (size_t i = 0; i < f->script.elements.size(); ++i) {
+                    if (current.elements[i].type == 5 && f->script.elements[i].type == 5) {
+                        f->script.elements[i].text = current.elements[i].text;
+                        f->script.elements[i].source_text = current.elements[i].source_text;
+                    }
+                }
+            }
+        }
         if (f->script.max_locals > max_locals) throw std::runtime_error("VM local count limit exceeded");
         f->locals.resize(f->script.max_locals);
         uint64_t next = 0;
@@ -727,7 +744,7 @@ Bytes Vm::snapshot() const {
     }
     StateWriter output;
     output.bytes = {'Y','U','K','A','R','I','V','M'};
-    output.number(9); output.number(payload.bytes.size()); output.number(state_hash(payload.bytes), 8);
+    output.number(10); output.number(payload.bytes.size()); output.number(state_hash(payload.bytes), 8);
     if (payload.bytes.size() > max_snapshot - output.bytes.size()) throw std::runtime_error("VM snapshot exceeds 128 MiB");
     output.bytes.insert(output.bytes.end(), payload.bytes.begin(), payload.bytes.end());
     return output.bytes;
@@ -745,7 +762,7 @@ void Vm::restore(const Bytes& bytes) {
         throw std::runtime_error("invalid Yukari VM snapshot");
     StateReader input{bytes, 8};
     const auto version = input.number();
-    if ((version < 1 || version > 9) || input.number() != bytes.size() - 24) throw std::runtime_error("unsupported VM snapshot version/length");
+    if ((version < 1 || version > 10) || input.number() != bytes.size() - 24) throw std::runtime_error("unsupported VM snapshot version/length");
     if (input.number(8) != state_hash(bytes, 24)) throw std::runtime_error("VM snapshot checksum mismatch");
     auto candidate = std::make_unique<Impl>(impl_->loader);
     candidate->host = impl_->host; candidate->trace = impl_->trace;
@@ -801,7 +818,9 @@ void Vm::restore(const Bytes& bytes) {
             embedded.data = input.blob();
         }
         auto frame = candidate->load(name, version >= 2 ? &embedded : nullptr);
-        if (expected_source != frame->source_hash) throw std::runtime_error("VM snapshot source script changed: " + frame->name);
+        const bool compatible = expected_source == frame->source_hash ||
+            (version <= 9 && expected_source == frame->translated_source_hash);
+        if (!compatible) throw std::runtime_error("VM snapshot source script changed: " + frame->name);
         if (version == 1) {
             auto data = input.blob();
             if (data.size() != frame->script.data.size()) throw std::runtime_error("VM snapshot data section length changed");

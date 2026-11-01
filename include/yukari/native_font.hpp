@@ -14,7 +14,11 @@ struct NativeFontSpec {
  bool operator<(const NativeFontSpec&)const;
  bool operator==(const NativeFontSpec& other)const{return !(*this<other)&&!(other<*this);}
 };
-struct NativeFontOptions {std::filesystem::path font_directory,gdi_cache_directory;bool require_gdi_capture=false;};
+struct NativeFontOptions {
+ std::filesystem::path font_directory,gdi_cache_directory;
+ bool require_gdi_capture=false;
+ std::filesystem::path fallback_font;
+};
 struct NativeFontBitmap {
  NativeGlyphPlanes planes;
  int32_t advance{},cell_height{};

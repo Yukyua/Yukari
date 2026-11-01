@@ -2,6 +2,7 @@
 #include "yukari/vm.hpp"
 #include "yukari/runtime.hpp"
 #include "yukari/text_dump.hpp"
+#include "yukari/translation_patch.hpp"
 #include <charconv>
 #include <iostream>
 #include <stdexcept>
@@ -21,10 +22,11 @@ void usage() {
               << "  yukari game-script GAME_DIRECTORY ENTRY\n"
               << "  yukari game-view GAME_DIRECTORY ENTRY [--once]\n"
               << "  yukari dump-text GAME_DIRECTORY OUTPUT_DIRECTORY\n"
+              << "  yukari validate-translation-patch GAME_DIRECTORY PATCH\n"
               << "  yukari vm GAME_DIRECTORY [ENTRY] [--trace] [--max-steps N]\n"
               << "  yukari play GAME_DIRECTORY [--until-title] [--screenshot PATH] [--fast] [--mute]\n"
               << "    [--new-game] [--until-text] [--advance N] [--state-dir PATH]\n"
-              << "    [--original-exe PATH] [--font-directory PATH] [--gdi-cache PATH] [--require-gdi-capture]\n"
+              << "    [--translation-patch PATH] [--original-exe PATH] [--font-directory PATH] [--gdi-cache PATH] [--require-gdi-capture]\n"
               << "    [--load-slot N | --load-original-slot N] [--original-encoding CP932|CP936]\n"
               << "    [--require-gpu] [--actions FILE] [--trace] [--max-ms N] [--seed N]\n"
               << "VM stops at unimplemented engine functions. Esc closes preview.\n";
@@ -64,6 +66,16 @@ int run_vm(int argc, char** argv) {
               << " steps=" << vm.steps() << " result=" << yukari::format_value(vm.last_result()) << '\n';
     return status == yukari::VmStatus::Halted ? 0 : 3;
 }
+int validate_translation_patch(const std::filesystem::path& directory,const std::filesystem::path& path){
+    const yukari::Resources resources(directory);const yukari::TranslationPatch patch(path);size_t scripts=0,matched=0;
+    for(const auto& resource:resources.entries()){
+        std::string name=resource.entry.name;for(char& c:name)if(c>='A'&&c<='Z')c=char(c-'A'+'a');
+        if(name.size()<4||name.compare(name.size()-4,4,".yks"))continue;
+        matched+=patch.verify(yukari::parse_script(resources.read(resource.entry.name)),resource.entry.name);++scripts;
+    }
+    if(matched!=patch.size())throw std::runtime_error("translation_patch contains "+std::to_string(patch.size()-matched)+" unmatched entries");
+    std::cout<<"translation_patch valid scripts="<<scripts<<" entries="<<matched<<'\n';return 0;
+}
 }
 int main(int argc, char** argv) {
     try {
@@ -73,6 +85,8 @@ int main(int argc, char** argv) {
             return yukari::play_game(argc, argv);
         } else if (command == "dump-text" && argc == 4) {
             yukari::dump_game_text(argv[2],argv[3],std::cout);
+        } else if (command == "validate-translation-patch" && argc == 4) {
+            return validate_translation_patch(argv[2],argv[3]);
         } else if (command == "vm" && argc >= 3) {
             return run_vm(argc, argv);
         } else if (command == "list" && argc == 3) {

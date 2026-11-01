@@ -59,6 +59,9 @@ struct Element {
     uint32_t type, a, b, c;
     std::string text;
     int32_t value{};
+    // Translation patches replace text at runtime, but save compatibility is
+    // tied to the source YKS literal. Empty means text is already the source.
+    std::string source_text;
 };
 struct Instruction {
     uint32_t word_offset, element;

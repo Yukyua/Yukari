@@ -22,6 +22,8 @@ KeyWait and KeyVoiceWait read context +0x8012c. Select type 1 reads +0x80124; Mo
 
 For Select/MouseSelect the SubMenu creation additionally requires zero arguments at this branch and global 0x56caf4 (the TTE wrapper-active flag) not equal to 1 (assembly 0x44b7b8..0x44b80d). Gate action creation and the corresponding key/area hit processing together. Unconditionally checking the area first and only gating a visible button is insufficient.
 
+When `AutoModeCancelLKey` is enabled and Auto is active, KeyWait consumes the next left-click result, clears Auto and repeats the same wait. This happens before dispatching the Auto area or ordinary advance action, so clicking the Auto button a second time exits Auto without advancing the page. With this setting disabled, the active Auto item uses `AreaSetAutoModeExecute`; the inactive item uses `AreaSetAutoMode`.
+
 `FUN_0x418380(item,4)` sets item kind=1 (MouseKey), mouse_key=4. It does **not** set kind=4 (Message). MouseKey4 is WM_MOUSEWHEEL positive delta; MouseKey5 is negative delta; MouseKey2 is right click. Baseline left-click, wheel-down and SystemKeySetKeyInSkip registration remain independent of these optional bits in the wait core. Actual Case items/navigation are likewise independent.
 
 ## Voice wait scheduling

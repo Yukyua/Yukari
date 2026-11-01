@@ -81,6 +81,17 @@ python3 tests/story.py --game-dir game --exe build/yukari
 
 导出全部有效脚本的字符串常量为 UTF-8 JSONL 和 CSV，包含剧情、姓名、选项、界面及其他常量。保留原始字节、脚本/指令位置和用途，CSV 预留译文列；无需运行游戏，不修改资源。输出目录必须是源游戏目录外的新目录。详见 [文本导出](docs/text-dump.md)。
 
+填写 CSV 的 `translation` 列后可编译并验证独立补丁，再直接启动：
+
+```sh
+python3 tools/build_translation_patch.py translation.csv translation_patch
+./build/yukari validate-translation-patch game translation_patch
+cp translation_patch game/translation_patch
+./build/yukari play game
+```
+
+`play` 会自动检测并加载游戏目录根部的 `translation_patch`，同时读取补丁声明的文本编码。`--translation-patch PATH` 和 `--original-encoding` 可显式覆盖自动选择。补丁按脚本路径和原始数据偏移替换字符串，并校验原文，不修改 YKC/YKS。macOS 启用补丁时自动使用系统中文字体回退。格式和校验规则见 [translation patch](docs/translation-patch.md)。
+
 ## 资源工具
 
 ```sh
