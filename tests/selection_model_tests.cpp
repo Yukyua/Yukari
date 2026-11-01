@@ -1,0 +1,21 @@
+#include "yukari/selection_model.hpp"
+#include <cassert>
+#include <iostream>
+#include <stdexcept>
+using namespace yukari;
+HostCall call(std::string name,std::vector<Value> args={}){HostCall c;c.function=std::move(name);c.arguments=std::move(args);c.block_begin=100;c.block_end=200;return c;}
+int main(){
+ SelectionItem item;assert(decode_selection_case(call("KeyCase",{65}),item)==SelectionRegistrationResult::NativeUnrecognized);
+ assert(decode_selection_case(call("KeyTableCase",{65,0,66,67}),item)==SelectionRegistrationResult::Added);assert((item.keys==std::vector<int32_t>{67,66,65}));SelectionModel history;history.add(item);SelectionInput in;in.query=SelectionInput::KeyHistoryChanged;in.key_history={67,66,65};assert(history.candidate(in)->branch==100);in.key_history={65,66,67};assert(!history.candidate(in));in.query=SelectionInput::VisualOnly;in.key_history={67,66,65};assert(!history.candidate(in));
+ SelectionModel keyboard;item={};item.kind=SelectionItem::Key;item.keys={65};item.branch=9;keyboard.add(item);item.allow_repeat=true;item.branch=10;keyboard.add(item);in={};in.query=SelectionInput::KeyDown;in.wparam=65;assert(keyboard.candidate(in)->branch==9);in.lparam=0x40000000;assert(keyboard.candidate(in)->branch==10);
+ SelectionModel mouse;assert(decode_selection_case(call("MouseKeyCase",{2,10,20,30,40}),item)==SelectionRegistrationResult::Added);mouse.add(item);in={};in.query=SelectionInput::MouseInput;in.message=0x204;in.x=30;in.y=40;assert(mouse.candidate(in));in.x=31;assert(!mouse.candidate(in));in.x=30;in.message=0;assert(!mouse.candidate(in));
+ item={};item.kind=SelectionItem::MouseKey;item.mouse_key=4;mouse.add(item);in.message=0x20a;in.wparam=uint32_t(120)<<16;assert(mouse.candidate(in)->item==1);in.wparam=uint32_t(uint16_t(-120))<<16;assert(!mouse.candidate(in));
+ SelectionModel messages;assert(decode_selection_case(call("WindowMessageCase",{0x401}),item)==SelectionRegistrationResult::Added);item.branch=1;messages.add(item);item.branch=2;item.blocked=true;messages.add(item);in={};in.query=SelectionInput::WindowMessage;in.message=0x401;assert(messages.candidate(in)->branch==2); // native ignores +b8 for type4
+ SelectionModel bounds;item={};item.rect={10,20,30,40};bounds.add(item);bounds.add(item);assert(bounds.hit(30,40)==1&&!bounds.hit(31,40));item.stop_hit_scan=true;SelectionModel first;first.add(item);first.add(item);assert(first.hit(30,40)==0);
+ assert(decode_selection_case(call("Case2",{0,std::string("disabled")}),item)==SelectionRegistrationResult::ConditionFalse);SelectionRegistration option;option.text_rect=SelectionRect{0,0,100,20};assert(decode_selection_case(call("Case2",{1,std::string("Choice")}),item,option)==SelectionRegistrationResult::Added&&item.text=="Choice"&&item.rect.right==100);
+ std::vector<Value> already={1,0,0,100,100,10,20,30,40,1,2,3,4,5,6,7,8};option.already=true;assert(decode_selection_case(call("MouseCase2Already",already),item,option)==SelectionRegistrationResult::Added);assert(item.sprites[0].group==4&&item.sprites[1].group==5&&item.sprites[2].group==6&&item.enter_sound==7&&item.select_sound==8);
+ SelectionModel visuals;assert(decode_selection_case(call("IndicateUsualTimeCase",{250,10,20,30,40,7,99}),item)==SelectionRegistrationResult::Added);assert(item.sprites[1].delay_ms==250&&item.sprites[1].group==7&&item.enter_sound==99);visuals.add(item);in={};auto update=visuals.update(in,{});assert(!update.candidate&&update.sprites.size()==1&&update.sprites[0].slot==1&&update.sprites[0].visible&&update.play_sounds==std::vector<int32_t>{99});assert(visuals.update(in,{}).play_sounds.empty());
+ SelectionModel together;SelectionItem normal;normal.sprites[0].group=0;normal.sprites[1].group=1;together.add(normal);assert(decode_selection_case(call("TogetherIndicateCase",{10,20,30,40,2,3}),item)==SelectionRegistrationResult::Added);together.add(item);update=together.update(in,0);bool found=false;for(const auto& change:update.sprites)if(change.item==1&&change.slot==1&&change.visible)found=true;assert(found);
+ bool failed=false;try{SelectionItem bad;bad.keys.resize(17);together.add(bad);}catch(const std::runtime_error&){failed=true;}assert(failed);
+ std::cout<<"native selection registration, ordered history, repeats, mouse edges, inclusive bounds, last message and visual changes passed\n";
+}

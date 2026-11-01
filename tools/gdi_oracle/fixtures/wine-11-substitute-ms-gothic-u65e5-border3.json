@@ -1,0 +1,76 @@
+{
+  "kind": "raw-TextOutA-GDI-planes",
+  "host": "wine:11.0; fixture-odd-border3-x86",
+  "font_file_sha256": "13a6114201477225f9baa4af6f2eae4ab03626bd24c0358a763cc45f196a2466",
+  "acp": 1252,
+  "oemcp": 437,
+  "thread_lcid": 1033,
+  "face_hex": "4d5320476f74686963",
+  "text_hex": "93fa",
+  "selected_face": "MS Gothic",
+  "logical_font": {
+    "height": 108,
+    "width": 0,
+    "weight": 200,
+    "charset": 128,
+    "quality": 0,
+    "out_precision": 0,
+    "clip_precision": 0,
+    "pitch": 0
+  },
+  "native_effect": 4,
+  "border_thickness": 3,
+  "shadow_thickness": 2,
+  "requested_scale": 4,
+  "margin": 0,
+  "extent": [
+    108,
+    108
+  ],
+  "metrics": {
+    "height": 108,
+    "ascent": 93,
+    "descent": 15,
+    "internal_leading": 0,
+    "external_leading": 0,
+    "average_width": 45,
+    "max_width": 112,
+    "weight": 400,
+    "charset": 128
+  },
+  "canvas": [
+    120,
+    120
+  ],
+  "notes": "Raw RGB source planes only; no native Yuka effect, downsample or alpha inference. GDI alpha byte is undefined. Label host and font hash externally.",
+  "cache_header": {
+    "format": "YKGDI003",
+    "header_bytes": 168,
+    "base_height": 27,
+    "base_width": 0,
+    "requested_weight": 200,
+    "foreground_COLORREF": 16777215,
+    "background_COLORREF": 0,
+    "native_effect": 4,
+    "border_thickness": 3,
+    "shadow_thickness": 2,
+    "border_COLORREF": 0,
+    "shadow_COLORREF": 0,
+    "logical_extent": [
+      30,
+      30
+    ],
+    "sha256": "70d7f6bd63737fe0f466d1d94977409772bbb3511cdf13d5ef3108807c846b71"
+  },
+  "verified_finish": {
+    "tool": "tools/gdi_oracle/inspect_cache.cpp",
+    "sanitizers": "ASan+UBSan",
+    "extent": [
+      30,
+      30
+    ],
+    "raw_mask_nonwhite_pixels": 2760,
+    "raw_mask_gray_pixels": 449,
+    "finished_mask_gray_pixels": 80
+  }
+}

@@ -1,0 +1,17 @@
+/build*/
+.DS_Store
+# Do not commit commercial game data.
+*.ykc
+*.yks
+*.ykg
+*.exe
+
+# Local game sample and detailed reverse-engineering evidence.
+/game/
+/analysis/
+__pycache__/
+
+/.yukari/
+
+# Local localization exports contain game text, not engine source.
+/translation/

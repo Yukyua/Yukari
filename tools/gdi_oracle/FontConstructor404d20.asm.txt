@@ -1,0 +1,40 @@
+Source: /usr/bin/objdump -d game/game.exe; original executable, not REA pseudo.
+  404d20: 6a ff                        	pushl	$-0x1
+  404d22: 68 48 0b 4a 00               	pushl	$0x4a0b48               # imm = 0x4A0B48
+  404d27: 64 a1 00 00 00 00            	movl	%fs:0x0, %eax
+  404d2d: 50                           	pushl	%eax
+  404d2e: 51                           	pushl	%ecx
+  404d2f: 56                           	pushl	%esi
+  404d30: a1 48 ea 4b 00               	movl	0x4bea48, %eax
+  404d35: 33 c4                        	xorl	%esp, %eax
+  404d37: 50                           	pushl	%eax
+  404d38: 8d 44 24 0c                  	leal	0xc(%esp), %eax
+  404d3c: 64 a3 00 00 00 00            	movl	%eax, %fs:0x0
+  404d42: 8b f1                        	movl	%ecx, %esi
+  404d44: 89 74 24 08                  	movl	%esi, 0x8(%esp)
+  404d48: e8 53 a1 00 00               	calll	0x40eea0 <.text+0xdea0>
+  404d4d: 8d 4e 58                     	leal	0x58(%esi), %ecx
+  404d50: c7 44 24 14 00 00 00 00      	movl	$0x0, 0x14(%esp)
+  404d58: e8 43 a1 00 00               	calll	0x40eea0 <.text+0xdea0>
+  404d5d: 68 08 01 00 00               	pushl	$0x108                  # imm = 0x108
+  404d62: 6a 00                        	pushl	$0x0
+  404d64: 56                           	pushl	%esi
+  404d65: e8 a6 f5 05 00               	calll	0x464310 <.text+0x63310>
+  404d6a: 8b 86 b4 00 00 00            	movl	0xb4(%esi), %eax
+  404d70: b9 18 00 00 00               	movl	$0x18, %ecx
+  404d75: 83 c4 0c                     	addl	$0xc, %esp
+  404d78: 85 c0                        	testl	%eax, %eax
+  404d7a: 89 8e b0 00 00 00            	movl	%ecx, 0xb0(%esi)
+  404d80: c6 86 c7 00 00 00 80         	movb	$-0x80, 0xc7(%esi)
+  404d87: c7 86 f4 00 00 00 02 00 00 00	movl	$0x2, 0xf4(%esi)
+  404d91: 89 8e f8 00 00 00            	movl	%ecx, 0xf8(%esi)
+  404d97: 75 02                        	jne	0x404d9b <.text+0x3d9b>
+  404d99: 8b c1                        	movl	%ecx, %eax
+  404d9b: 89 86 fc 00 00 00            	movl	%eax, 0xfc(%esi)
+  404da1: 8b c6                        	movl	%esi, %eax
+  404da3: 8b 4c 24 0c                  	movl	0xc(%esp), %ecx
+  404da7: 64 89 0d 00 00 00 00         	movl	%ecx, %fs:0x0
+  404dae: 59                           	popl	%ecx
+  404daf: 5e                           	popl	%esi
+  404db0: 83 c4 10                     	addl	$0x10, %esp
+  404db3: c3                           	retl
