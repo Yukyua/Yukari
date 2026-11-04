@@ -267,9 +267,9 @@ class Runtime {
     }
     void load_scene_image(int id,const std::string& name,int x,int y,const Bytes& mask={}){
         auto parts=graphic_parts(name);scene.load_deferred(id,key(name),[this,part=parts.front()]{return asset(part).bytes;},x,y,mask);
-        if(parts.size()==1)return;const int temporary=2000000000;const auto base=scene.size(id);
+        if(parts.size()==1)return;const int temporary=2000000000;
         for(size_t i=1;i<parts.size();++i){const auto& part=parts[i];scene.load_deferred(temporary,key(part),[this,part]{return asset(part).bytes;});const auto overlay=scene.size(temporary);
-            if(overlay.x!=base.x||overlay.y!=base.y){scene.erase(temporary);throw std::runtime_error("composite graphic dimensions differ: "+name);}scene.paint(id,temporary,{0,0,base.x,base.y});scene.erase(temporary);}
+            scene.paint(id,temporary,{0,0,overlay.x,overlay.y});scene.erase(temporary);}
     }
     void position_sprite(Sprite& s) {
         const auto& parent=layers.at(s.parent);

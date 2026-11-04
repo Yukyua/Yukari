@@ -93,6 +93,16 @@ class RuntimeCommands(unittest.TestCase):
         capture=self.root/'composite.png';flags,log=self.run_game([f'capture {capture}','advance'])
         pixel=read_png(capture)[2](12,12)
         self.assertTrue(all(abs(a-b)<=2 for a,b in zip(pixel,(130,35,50))),f'colon graphic composition differs: {pixel}\n{log}')
+    def test_colon_graphics_keep_overlay_size_and_clip_on_restore(self):
+        s=Script();s.call('GraphicLoad',1,'images\\base.png:overlay.png',10,10);s.call('KeyWait');self.end(s)
+        self.package(s,[('overlay.png',png(8,48,color=(220,10,20,255)))])
+        first=self.root/'first.png';restored=self.root/'restored.png'
+        self.run_game([f'capture {first}','save 7','load 7',f'capture {restored}','advance'])
+        self.assertEqual(first.read_bytes(),restored.read_bytes())
+        pixel=read_png(first)[2]
+        self.assertEqual(pixel(12,12),(220,10,20))
+        self.assertEqual(pixel(20,12),(40,60,80),'narrow overlay was stretched')
+        self.assertEqual(pixel(12,43),(0,0,0),'tall overlay escaped base canvas')
     def test_text_select_click(self):
         s=self.base();s.call('SelectMode',0);s.call('SelectPosition',0,100,100,300,40);s.call('Select')
         def choices(p):
