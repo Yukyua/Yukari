@@ -19,6 +19,7 @@ struct AreaDefinition {
     std::string script;
     bool mouse_area{},history_indication{};
     std::vector<int32_t> keys; // OR alternatives; zero never matches native VK
+    std::vector<int32_t> mouse_inputs; // buttons 1..3, wheel up/down 4/5
 };
 struct AreaState {
     std::map<std::string,AreaDefinition> builtins;
@@ -48,6 +49,7 @@ public:
     std::vector<int32_t> hit_scripts(int32_t x,int32_t y,bool mouse_move=false) const;
     std::vector<int32_t> hovered_regions(int32_t x,int32_t y) const;
     std::vector<int32_t> key_scripts(int32_t virtual_key,bool repeated=false) const;
+    std::vector<int32_t> mouse_scripts(int32_t input) const;
     const AreaState& state() const {return state_;}
     void restore(AreaState state);
 private:

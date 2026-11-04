@@ -48,6 +48,12 @@ int main(){
  assert(at(out.transparency,1,1)==0x00000000); // full 4x4 coverage in expansion
  auto aa=native_glyph_effect_binary(effect(2),glyph,0x000000ff);assert(aa.color.width==2&&aa.color.height==2&&at(aa.color,1,1)==0x00ff0000&&at(aa.transparency,1,1)==0x00efefef);
  glyph.pixels[0]=0x00808080;bool rejected=false;try{native_glyph_effect_binary(effect(2),glyph,0);}catch(const std::runtime_error&){rejected=true;}assert(rejected);
+ // Portable fallback keeps gray edge coverage while retaining the original
+ // border geometry and downsampling instead of hard-thresholding to MONO.
+ auto coverage=native_glyph_effect_coverage(effect(2),glyph,0x000000ff);
+ assert(at(coverage.transparency,0,0)>0&&at(coverage.transparency,0,0)<0x00ffffff);
+ auto gray_border=native_glyph_effect_coverage(effect(4,3),glyph,0x000000ff);
+ assert(gray_border.color.width==6&&gray_border.color.height==6);
  // Packed 16-bit sums retain all four bytes, including maximal alpha and
  // cross-lane carry boundaries, against the scalar native averaging rule.
  uint32_t seed=0x8239ad17;auto random=plane(128,128,0);

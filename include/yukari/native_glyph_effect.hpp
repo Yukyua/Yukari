@@ -27,4 +27,10 @@ NativeGlyphPlanes native_glyph_finish(const FontEffectPlan& plan,
 // from its black-on-white rendering. Extents are actual GDI measured extents.
 NativeGlyphPlanes native_glyph_effect_binary(const FontEffectPlan& plan,
  const NativeGlyphPlane& glyph_mask,uint32_t foreground_colorref);
+// Portable approximation for an antialiased black-on-white source mask.
+// Each pixel must be neutral RGB (white=transparent, black=full glyph). It
+// retains the original effect geometry/dilation/downsample while approximating
+// GDI's colored TextOut coverage from the FreeType grayscale raster.
+NativeGlyphPlanes native_glyph_effect_coverage(const FontEffectPlan& plan,
+ const NativeGlyphPlane& glyph_mask,uint32_t foreground_colorref);
 }

@@ -87,6 +87,12 @@ class RuntimeCommands(unittest.TestCase):
         self.assertEqual(flags.get(9000),1,log);w,h,pixel=read_png(original);self.assertEqual((w,h),(1024,576));self.assertEqual(pixel(20,20),(40,60,80));self.assertEqual(read_png(changed)[2](20,20),(60,55,90))
         self.assertTrue(any(max(pixel(x,y))>160 for y in range(100,130) for x in range(100,220)),'first text line absent')
         self.assertTrue(any(max(pixel(x,y))>160 for y in range(130,165) for x in range(100,220)),'LF did not place second line below first')
+    def test_colon_separated_graphics_compose_in_order(self):
+        s=Script();s.call('GraphicLoad',1,'images\\base.png:images\\overlay.png',10,10);s.call('KeyWait');self.end(s)
+        self.package(s,[('images\\overlay.png',png(color=(220,10,20,128)))])
+        capture=self.root/'composite.png';flags,log=self.run_game([f'capture {capture}','advance'])
+        pixel=read_png(capture)[2](12,12)
+        self.assertTrue(all(abs(a-b)<=2 for a,b in zip(pixel,(130,35,50))),f'colon graphic composition differs: {pixel}\n{log}')
     def test_text_select_click(self):
         s=self.base();s.call('SelectMode',0);s.call('SelectPosition',0,100,100,300,40);s.call('Select')
         def choices(p):

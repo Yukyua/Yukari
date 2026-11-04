@@ -39,6 +39,27 @@ void draw_binary(NativeGlyphPlane& dst,const NativeGlyphPlane& glyph,int32_t ox,
    dst.pixels[size_t(dy)*dst.width+size_t(dx)]=color;
  }
 }
+uint32_t blend(uint32_t background,uint32_t foreground,uint32_t transparency){
+ uint32_t out=0;for(unsigned shift:{0U,8U,16U}){
+  const auto b=(background>>shift)&255,f=(foreground>>shift)&255;
+  out|=((f*(255-transparency)+b*transparency+127)/255)<<shift;
+ }return out;
+}
+void draw_coverage_color(NativeGlyphPlane& dst,const NativeGlyphPlane& glyph,int32_t ox,int32_t oy,uint32_t color){
+ for(int32_t y=0;y<glyph.height;++y)for(int32_t x=0;x<glyph.width;++x){
+  const int64_t dx=int64_t(x)+ox,dy=int64_t(y)+oy;if(dx<0||dy<0||dx>=dst.width||dy>=dst.height)continue;
+  const auto transparency=glyph.pixels[size_t(y)*glyph.width+x]&255;
+  if(transparency<255)dst.pixels[size_t(dy)*dst.width+size_t(dx)]=blend(dst.pixels[size_t(dy)*dst.width+size_t(dx)],color,transparency);
+ }
+}
+void draw_coverage_mask(NativeGlyphPlane& dst,const NativeGlyphPlane& glyph,int32_t ox,int32_t oy){
+ for(int32_t y=0;y<glyph.height;++y)for(int32_t x=0;x<glyph.width;++x){
+  const int64_t dx=int64_t(x)+ox,dy=int64_t(y)+oy;if(dx<0||dy<0||dx>=dst.width||dy>=dst.height)continue;
+  const auto transparency=glyph.pixels[size_t(y)*glyph.width+x]&255;if(transparency==255)continue;
+  auto& target=dst.pixels[size_t(dy)*dst.width+size_t(dx)];const auto old=target&255;
+  const auto value=(old*transparency+127)/255;target=value|(value<<8)|(value<<16);
+ }
+}
 }
 uint32_t native_glyph_colorref_to_dib(uint32_t c){return (c&0x0000ff00)|((c&0xff)<<16)|((c>>16)&0xff);}
 NativeGlyphPlane native_glyph_downsample4(const NativeGlyphPlane& src){
@@ -81,6 +102,19 @@ NativeGlyphPlanes native_glyph_effect_binary(const FontEffectPlan& plan,const Na
  draw_binary(color,glyph,plan.color_glyph_origin_hi.first,plan.color_glyph_origin_hi.second,fg);
  draw_binary(mask,glyph,plan.mask_glyph_origin_hi.first,plan.mask_glyph_origin_hi.second,0);
  if(plan.kind==FontEffectPlan::Shadow)draw_binary(mask,glyph,plan.shadow_mask_translation_hi.first,plan.shadow_mask_translation_hi.second,0);
+ return native_glyph_finish(plan,std::move(color),std::move(mask));
+}
+NativeGlyphPlanes native_glyph_effect_coverage(const FontEffectPlan& plan,const NativeGlyphPlane& glyph,uint32_t foreground){
+ validate(glyph);for(auto pixel:glyph.pixels)if((pixel&0xff000000)||((pixel&255)!=((pixel>>8)&255))||((pixel&255)!=((pixel>>16)&255)))throw std::runtime_error("antialiased glyph mask must contain neutral RGB coverage");
+ const auto output=plan.canvas(glyph.width,glyph.height);const auto scale=plan.kind==FontEffectPlan::Plain?1:4;
+ if(output.first>INT32_MAX/scale||output.second>INT32_MAX/scale)throw std::runtime_error("native glyph scratch extent overflow");
+ const auto fg=native_glyph_colorref_to_dib(foreground);uint32_t background=fg;
+ if(plan.kind==FontEffectPlan::Shadow)background=native_glyph_colorref_to_dib(plan.shadow_color);
+ if(plan.kind==FontEffectPlan::Border||plan.kind==FontEffectPlan::BorderShadow)background=native_glyph_colorref_to_dib(plan.border_color);
+ auto color=filled(output.first*scale,output.second*scale,background);auto mask=filled(color.width,color.height,0x00ffffff);
+ draw_coverage_color(color,glyph,plan.color_glyph_origin_hi.first,plan.color_glyph_origin_hi.second,fg);
+ draw_coverage_mask(mask,glyph,plan.mask_glyph_origin_hi.first,plan.mask_glyph_origin_hi.second);
+ if(plan.kind==FontEffectPlan::Shadow)draw_coverage_mask(mask,glyph,plan.shadow_mask_translation_hi.first,plan.shadow_mask_translation_hi.second);
  return native_glyph_finish(plan,std::move(color),std::move(mask));
 }
 }

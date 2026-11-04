@@ -74,6 +74,14 @@ std::vector<int32_t> AreaServices::key_scripts(int32_t vk,bool repeated)const{
         if(std::find(a.keys.begin(),a.keys.end(),vk)!=a.keys.end())ids.push_back(a.id);
     }return ids;
 }
+std::vector<int32_t> AreaServices::mouse_scripts(int32_t input)const{
+    std::vector<int32_t> ids;if(input<1||input>5)return ids;
+    for(const auto& a:state_.scripts){
+        if(uint32_t(a.native[16])&0x80000000)continue;
+        if(hooks_.eligible&&!hooks_.eligible("AreaScript:"+std::to_string(a.id)))continue;
+        if(std::find(a.mouse_inputs.begin(),a.mouse_inputs.end(),input)!=a.mouse_inputs.end())ids.push_back(a.id);
+    }return ids;
+}
 std::optional<Value> AreaServices::call(const std::string& name,const std::vector<Value>& args){
     if(builtin(name)){
         auto& area=state_.builtins[name];normalize(area,args);
@@ -101,6 +109,14 @@ std::optional<Value> AreaServices::call(const std::string& name,const std::vecto
         }
         // Native short calls leave the separately stored key table/script
         // intact, even though mouse-area fields are disabled/reset.
+        changed(name);return Value{};
+    }
+    if(name=="AreaSetMouseInScript"){
+        if(args.empty())return Value{};
+        auto id=integer(args[0]);auto it=std::find_if(state_.scripts.begin(),state_.scripts.end(),[&](const auto& a){return a.id==id;});
+        if(it==state_.scripts.end()){state_.scripts.push_back({});it=state_.scripts.end()-1;it->id=id;}
+        it->native[0]=0;std::fill(it->native.begin()+1,it->native.begin()+16,-1);it->native[16]=0;it->history_indication=false;
+        if(args.size()>2){it->script=text(args[1]);it->mouse_inputs.clear();for(size_t i=2;i<args.size();++i){auto input=integer(args[i]);if(input>=1&&input<=5)it->mouse_inputs.push_back(input);}}
         changed(name);return Value{};
     }
     if(name=="AreaSetMouseLeftScript"||name=="AreaSetMouseAreaScript"||name=="AreaSetIndicate"||name=="AreaSetHistoryIndicate"){

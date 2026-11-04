@@ -40,6 +40,8 @@
 #include <png.h>
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -68,6 +70,26 @@ struct Args {
     size_t size() const { return a.size(); }
 };
 std::string key(std::string s) { for (char& c:s) if (c>='A'&&c<='Z') c=char(c-'A'+'a'); return s; }
+SDL_Point game_resolution(const Resources& resources){
+    auto dimensions=[](const Bytes& bytes)->std::optional<SDL_Point>{
+        if(bytes.size()<24||std::memcmp(bytes.data(),"\x89PNG\r\n\x1a\n",8)!=0)return {};
+        auto be=[&](size_t at){return uint32_t(bytes[at])<<24|uint32_t(bytes[at+1])<<16|uint32_t(bytes[at+2])<<8|bytes[at+3];};
+        const auto w=be(16),h=be(20);if(w<320||h<240||w>4096||h>2160||uint64_t(w)*h>16000000)return {};
+        return SDL_Point{int(w),int(h)};
+    };
+    for(const auto* name:{"ykg\\system\\black.png","ykg\\bg\\black.png"})if(resources.contains(name))if(auto size=dimensions(resources.read(name)))return *size;
+    for(const auto* name:{"ykg\\system\\black.ykg","ykg\\bg\\black.ykg"})if(resources.contains(name))if(auto size=dimensions(parse_graphic(resources.read(name)).color))return *size;
+    return {1024,576};
+}
+std::optional<std::filesystem::path> installed_japanese_font_directory(){
+    const char* home=std::getenv("HOME");if(!home||!*home)return {};
+    std::vector<std::filesystem::path> candidates={std::filesystem::path(home)/"Library/Fonts",
+        std::filesystem::path(home)/"Library/Application Support/CrossOver/Bottles/windows/drive_c/windows/Fonts"};
+    std::error_code error;const auto bottles=std::filesystem::path(home)/"Library/Application Support/CrossOver/Bottles";
+    if(std::filesystem::is_directory(bottles,error))for(const auto& entry:std::filesystem::directory_iterator(bottles,error))if(entry.is_directory(error))candidates.push_back(entry.path()/"drive_c/windows/Fonts");
+    for(const auto& directory:candidates)if(std::filesystem::is_regular_file(directory/"MSGothic.ttf",error))return directory;
+    return {};
+}
 struct Asset { Bytes bytes; std::vector<std::vector<Frame>> groups; };
 struct Layer { std::string asset; int x{},y{},alpha=255; bool visible=true; int image_type=2; std::string mask; double transmittance=0; };
 struct Sprite : SpriteMotion {
@@ -95,7 +117,8 @@ class Runtime {
     std::string window_title="Yukari";
     Bytes original_template,system_template;
     int initial_native=-1;
-    Scene scene{1024,576,"Yukari"};
+    SDL_Point resolution{};
+    Scene scene;
     Audio audio;
     Midi midi;
     std::unique_ptr<MacCdPlayer> cd_player;
@@ -224,7 +247,7 @@ class Runtime {
         return open_resource(name).read_all();
     }
     void reload_layer_image(int id,const std::string& name){
-        if(!layers.count(id))return;auto& layer=layers.at(id);scene.load_deferred(id,key(name),[this,name]{return asset(name).bytes;},layer.x,layer.y);layer.asset=key(name);layer.mask.clear();scene.set_image_type(id,layer.image_type);scene.set_z(id,id*10000);scene.set_alpha(id,layer.alpha);scene.set_visible(id,layer.visible);apply_motion(id);modified_pixels.insert(id);
+        if(!layers.count(id))return;auto& layer=layers.at(id);load_scene_image(id,name,layer.x,layer.y);layer.asset=key(name);layer.mask.clear();scene.set_image_type(id,layer.image_type);scene.set_z(id,id*10000);scene.set_alpha(id,layer.alpha);scene.set_visible(id,layer.visible);apply_motion(id);modified_pixels.insert(id);
     }
     MotionModel& motion_for(int id){auto [it,inserted]=layer_motion.try_emplace(id);if(inserted&&layers.count(id)){it->second.x=layers.at(id).x;it->second.y=layers.at(id).y;}return it->second;}
     void apply_motion(int id){if(!layers.count(id))return;auto& m=motion_for(id);auto& l=layers.at(id);l.x=int(m.x);l.y=int(m.y);scene.set_position(id,l.x,l.y);scene.set_scale(id,m.scale_enabled?m.scale_x*1000:1000,m.scale_enabled?m.scale_y*1000:1000);scene.set_rotate(id,m.angle);scene.set_raster(id,m.raster_visible(),m.raster_amplitude(),m.raster_frequency,m.raster_phase);update_parent(id);}
@@ -236,6 +259,17 @@ class Runtime {
             a.groups=split_sprite_groups(parse_graphic_frames(a.bytes));
         }
         return assets.emplace(k,std::move(a)).first->second;
+    }
+    std::vector<std::string> graphic_parts(const std::string& name)const{
+        std::vector<std::string> parts;size_t begin=0;
+        for(;;){auto end=name.find(':',begin);auto part=name.substr(begin,end==std::string::npos?end:end-begin);if(part.empty())throw std::runtime_error("empty composite graphic resource");parts.push_back(std::move(part));if(end==std::string::npos)break;begin=end+1;}
+        return parts;
+    }
+    void load_scene_image(int id,const std::string& name,int x,int y,const Bytes& mask={}){
+        auto parts=graphic_parts(name);scene.load_deferred(id,key(name),[this,part=parts.front()]{return asset(part).bytes;},x,y,mask);
+        if(parts.size()==1)return;const int temporary=2000000000;const auto base=scene.size(id);
+        for(size_t i=1;i<parts.size();++i){const auto& part=parts[i];scene.load_deferred(temporary,key(part),[this,part]{return asset(part).bytes;});const auto overlay=scene.size(temporary);
+            if(overlay.x!=base.x||overlay.y!=base.y){scene.erase(temporary);throw std::runtime_error("composite graphic dimensions differ: "+name);}scene.paint(id,temporary,{0,0,base.x,base.y});scene.erase(temporary);}
     }
     void position_sprite(Sprite& s) {
         const auto& parent=layers.at(s.parent);
@@ -258,7 +292,7 @@ class Runtime {
     void load_layer(int id,const std::string& name,int x,int y,bool visible,int image_type=2,const Bytes& mask={}) {
         if(id<0||id>50000)throw std::runtime_error("graphic layer ID outside supported range");
         erase_layer(id);
-        scene.load_deferred(id,key(name),[this,name]{return asset(name).bytes;},x,y,mask);scene.set_z(id,id*10000);scene.set_image_type(id,image_type);
+        load_scene_image(id,name,x,y,mask);scene.set_z(id,id*10000);scene.set_image_type(id,image_type);
         scene.set_visible(id,visible); layers[id]={key(name),x,y,255,visible,image_type,{}};
     }
     const std::vector<Frame>& group_for(const Sprite& s) {
@@ -619,9 +653,11 @@ class Runtime {
     }
     bool system_interaction(const SDL_Event& e){
         if(wait!=Wait::Text&&(wait!=Wait::Selection||collection))return false;const auto mask=wait_function_mask();
+        auto mouse_script=[&](int input){if(!(mask&8))return false;for(int id:areas.mouse_scripts(input)){auto area=areas.script_area(id);if(area&&!area->script.empty()){vm.set_script_state(0);open_menu(area->script);return true;}}return false;};
         auto submenu=[&]{auto it=settings.state().values.find("SubMenuScript");if(!(mask&4)||!vm.submenu_enabled()||it==settings.state().values.end()||text(it->second).empty())return false;if(wait==Wait::Selection&&(timed_selection||(configuration.count("SelectionHasArguments")&&number(configuration.at("SelectionHasArguments")[0]))))return false;auto_mode=false;skip_mode=ordinary_skip_mode=already_mode=false;open_menu(text(it->second));return true;};
-        if(e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_RIGHT)return submenu();
-        if(e.type==SDL_MOUSEWHEEL&&(mask&0x101)==0x101&&e.wheel.y>0){show_history();return true;}
+        if(e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_RIGHT){if(mouse_script(2))return true;return submenu();}
+        if(e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_MIDDLE&&mouse_script(3))return true;
+        if(e.type==SDL_MOUSEWHEEL){if(e.wheel.y>0&&mouse_script(4))return true;if(e.wheel.y<0&&mouse_script(5))return true;if((mask&0x101)==0x101&&e.wheel.y>0){show_history();return true;}}
         if(e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_LEFT){
             const int x=e.button.x,y=e.button.y;
             // Native KeyWait consumes the left click and repeats the wait after
@@ -631,6 +667,7 @@ class Runtime {
                 std::cout<<"AUTO_MODE value=0 reason=left-click-cancel\n";
                 return true;
             }
+            if(mouse_script(1))return true;
             if((mask&1)&&areas.hit("AreaSetHistoryMode",x,y)){show_history();return true;}
             if((mask&2)&&areas.hit("AreaSetWindowErase",x,y)){erase_wait_windows();return true;}
             if((mask&0x40)&&areas.hit("AreaSetAlreadySkip",x,y)){toggle_skip(true);return true;}
@@ -981,7 +1018,7 @@ class Runtime {
         if(n=="GraphicLoad"||n=="GraphicLoadHide"||n=="GraphicLoadADD"||n=="GraphicLoadSUB"||n=="GraphicLoadHideADD"||n=="GraphicLoadHideSUB") {
             Bytes mask;if(a.size()==3||a.size()==5)mask=resources.read(a.s(2));int type=n.size()>=3&&n.substr(n.size()-3)=="ADD"?4:n.size()>=3&&n.substr(n.size()-3)=="SUB"?5:2;
             load_layer(a.n(0),a.s(1),a.size()>=4?a.n(a.size()==5?3:2):0,a.size()>=4?a.n(a.size()==5?4:3):0,n.find("Hide")==std::string::npos,type,mask);if(a.size()==3||a.size()==5)layers.at(a.n(0)).mask=a.s(2);
-            if(a.size()==2||a.size()==3){auto size=scene.size(a.n(0));auto& l=layers.at(a.n(0));l.x=(1024-size.x)/2;l.y=(576-size.y)/2;scene.set_position(a.n(0),l.x,l.y);}
+            if(a.size()==2||a.size()==3){auto size=scene.size(a.n(0));auto& l=layers.at(a.n(0));l.x=(scene.width()-size.x)/2;l.y=(scene.height()-size.y)/2;scene.set_position(a.n(0),l.x,l.y);}
             return HostResult{};
         }
         if(n=="GraphicDelete"){erase_layer(a.n(0));return HostResult{};}
@@ -1056,11 +1093,12 @@ class Runtime {
     void cancel_selection() { for(auto it=regions.rbegin();it!=regions.rend();++it)if(it->kind=="MouseKeyCase"&&Args{it->args}.n(0)==2){finish_selection(it->branch);return;} }
 public:
     Runtime(const std::filesystem::path& directory,const std::filesystem::path& state,uint32_t seed,bool accelerated,NativeFontOptions font_options={},std::filesystem::path original_executable={},std::filesystem::path patch={})
-        :resources(directory),game_directory(directory),translation_patch(patch),vm([this](const std::string& n){return translation_patch.apply(parse_script(resources.read(n)),n);}),services(ServiceHooks{
+        :resources(directory),game_directory(directory),resolution(game_resolution(resources)),scene(resolution.x,resolution.y,"Yukari"),translation_patch(patch),vm([this](const std::string& n){return translation_patch.apply(parse_script(resources.read(n)),n);}),services(ServiceHooks{
             [this]{return uint32_t(now);},{},
             [this](std::string pattern){std::replace(pattern.begin(),pattern.end(),'\\','/');glob_t matches{};const auto path=(game_directory/pattern).string();bool found=false;if(glob(path.c_str(),0,nullptr,&matches)==0)for(size_t i=0;i<matches.gl_pathc;++i)if(std::filesystem::is_regular_file(matches.gl_pathv[i])){found=true;break;}globfree(&matches);return found;},
             [this](const std::string& name){return resources.contains(name);},
             [this](bool horizontal){return horizontal?scene.width():scene.height();},"CP932"}),state_dir(state),random(seed),fast(accelerated) {
+        if(patch.empty()&&font_options.font_directory.empty())if(auto directory=installed_japanese_font_directory()){font_options.font_directory=*directory;font_options.fallback_font=*directory/"MSGothic.ttf";}
         if(!patch.empty()&&font_options.fallback_font.empty()){
             for(const auto* candidate:{"/System/Library/Fonts/Hiragino Sans GB.ttc","/System/Library/Fonts/STHeiti Medium.ttc"})
                 if(std::filesystem::is_regular_file(candidate)){font_options.fallback_font=candidate;break;}

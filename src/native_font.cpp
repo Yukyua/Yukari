@@ -77,27 +77,28 @@ struct NativeFontRasterizer::Impl {
   double xratio=1.0;
   if(spec.width){const int logical_width=(spec.width*scale)/2;const int average=os2&&os2->xAvgCharWidth>0?os2->xAvgCharWidth:std::max<int>(1,f->units_per_EM/2);const double current=double(average)*f->size->metrics.x_scale/65536.0/64.0;xratio=std::abs(logical_width)/std::max(.01,current);}
   FT_Matrix transform{FT_Fixed(std::llround(xratio*65536.0)),0,0,65536};FT_Set_Transform(f,&transform,nullptr);
-  struct Placement{int x,y,w,h,pitch;Bytes bytes;};std::vector<Placement> glyphs;int pen=0;
+  struct Placement{int x,y,w,h;Bytes coverage;};std::vector<Placement> glyphs;int pen=0;
   const int ascender=int((f->size->metrics.ascender+63)>>6);
   // GDI metric mapping remains a source fallback. Binary high-resolution ink
   // lets the engine's exact dual-plane kernel operate without invented AA RGB.
   for(auto cp:unicode(text)){if(cp=='\r'||cp=='\n')throw std::runtime_error("native glyph cell contains a line break");
-   if(FT_Load_Char(f,cp,FT_LOAD_DEFAULT|FT_LOAD_TARGET_MONO))throw std::runtime_error("cannot load native font glyph");
+   if(FT_Load_Char(f,cp,FT_LOAD_DEFAULT|FT_LOAD_TARGET_NORMAL))throw std::runtime_error("cannot load native font glyph");
    if(spec.weight>=600&&!(f->style_flags&FT_STYLE_FLAG_BOLD))FT_GlyphSlot_Embolden(f->glyph);
-   if(FT_Render_Glyph(f->glyph,FT_RENDER_MODE_MONO))throw std::runtime_error("cannot rasterize native font glyph");auto& b=f->glyph->bitmap;
-   Placement p{pen+f->glyph->bitmap_left,ascender-f->glyph->bitmap_top,int(b.width),int(b.rows),int((b.width+7)/8),{}};p.bytes.resize(size_t(p.pitch)*p.h);for(int y=0;y<p.h;++y){auto* row=b.pitch>=0?b.buffer+y*b.pitch:b.buffer+(p.h-y-1)*(-b.pitch);std::copy(row,row+p.pitch,p.bytes.begin()+size_t(y)*p.pitch);}glyphs.push_back(std::move(p));pen+=int((f->glyph->advance.x+32)>>6);if(pen<0||pen>16384)throw std::runtime_error("native glyph source width exceeds limit");
+   if(FT_Render_Glyph(f->glyph,FT_RENDER_MODE_NORMAL))throw std::runtime_error("cannot rasterize native font glyph");auto& b=f->glyph->bitmap;
+   if(b.pixel_mode!=FT_PIXEL_MODE_GRAY&&b.width)throw std::runtime_error("native fallback requires grayscale FreeType coverage");
+   Placement p{pen+f->glyph->bitmap_left,ascender-f->glyph->bitmap_top,int(b.width),int(b.rows),{}};p.coverage.resize(size_t(p.w)*p.h);for(int y=0;y<p.h;++y){auto* row=b.pitch>=0?b.buffer+y*b.pitch:b.buffer+(p.h-y-1)*(-b.pitch);for(int x=0;x<p.w;++x)p.coverage[size_t(y)*p.w+x]=uint8_t((unsigned(row[x])*255+b.num_grays/2)/std::max<unsigned>(1,b.num_grays-1));}glyphs.push_back(std::move(p));pen+=int((f->glyph->advance.x+32)>>6);if(pen<0||pen>16384)throw std::runtime_error("native glyph source width exceeds limit");
   }
   const int height=spec.height>0?requested*scale:std::max(1,int((f->size->metrics.height+63)>>6));
   if(pen<0||pen>16384||height>4096||uint64_t(pen)*height>16000000)throw std::runtime_error("native glyph source bounds exceed limit");
   NativeGlyphPlane mask{pen,height,std::vector<uint32_t>(size_t(pen)*height,0x00ffffff)};
-  for(const auto& p:glyphs)for(int y=0;y<p.h;++y)for(int x=0;x<p.w;++x){const int dx=p.x+x,dy=p.y+y;if(dx>=0&&dy>=0&&dx<pen&&dy<height&&(p.bytes[size_t(y)*p.pitch+x/8]&(128>>(x%8))))mask.pixels[size_t(dy)*pen+dx]=0;}
+  for(const auto& p:glyphs)for(int y=0;y<p.h;++y)for(int x=0;x<p.w;++x){const int dx=p.x+x,dy=p.y+y;if(dx>=0&&dy>=0&&dx<pen&&dy<height){const auto value=uint32_t(255-p.coverage[size_t(y)*p.w+x]);mask.pixels[size_t(dy)*pen+dx]=value|(value<<8)|(value<<16);}}
   source=std::make_shared<Source>(Source{std::move(mask),pen/scale,height/scale,{}});++source_rasters;
   const size_t bytes=source->mask.pixels.size()*sizeof(uint32_t);
   if(bytes<=16*1024*1024){if(source_bytes+bytes>16*1024*1024||sources.size()>=1024){sources.clear();source_bytes=0;}source_bytes+=bytes;sources.emplace(key,source);}
   }
   const EffectKey effect{spec.effect,spec.border_thickness,spec.shadow_thickness,spec.border_color,spec.shadow_color,foreground};
   if(auto old=source->effects.find(effect);old!=source->effects.end())if(auto bitmap=old->second.lock())return bitmap;
-  auto out=std::make_shared<NativeFontBitmap>();out->advance=source->advance;out->cell_height=source->cell_height;out->planes=native_glyph_effect_binary(plan,source->mask,foreground);out->actual_family=f->family_name?f->family_name:"";out->source="freetype-mono";
+  auto out=std::make_shared<NativeFontBitmap>();out->advance=source->advance;out->cell_height=source->cell_height;out->planes=native_glyph_effect_coverage(plan,source->mask,foreground);out->actual_family=f->family_name?f->family_name:"";out->source="freetype-gray";
   if(source->effects.size()>=64)source->effects.clear();source->effects[effect]=out;return out;
  }
 };

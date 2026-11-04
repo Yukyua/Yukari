@@ -44,7 +44,12 @@ void dynamic(){
     check(s.key_scripts(112)==std::vector<int32_t>{8}&&s.key_scripts(113)==std::vector<int32_t>{8},"key alternatives are OR, not chord");
     check(s.key_scripts(112,true).empty()&&s.key_scripts(0).empty(),"repeat and zero VK filtered");
     call(s,"AreaSetKeyInScript",{int32_t(8)});check(s.key_scripts(112)==std::vector<int32_t>{8},"native short key registration retains separate key table");
+    call(s,"AreaSetMouseInScript",{int32_t(9),std::string("wheel.yks"),int32_t(4),int32_t(5)});
+    check(s.mouse_scripts(4)==std::vector<int32_t>{9}&&s.mouse_scripts(5)==std::vector<int32_t>{9}&&s.mouse_scripts(2).empty(),"mouse input alternatives or wheel mapping");
+    auto mouse_state=s.state();AreaServices mouse_restored(hooks);mouse_restored.restore(mouse_state);check(mouse_restored.mouse_scripts(4)==std::vector<int32_t>{9},"mouse input binding state restore");
+    call(s,"AreaSetMouseInScript",{int32_t(9)});check(s.mouse_scripts(5)==std::vector<int32_t>{9},"native short mouse registration retains separate input table");
     call(s,"AreaSetDelete",{int32_t(8)});check(s.key_scripts(112).empty(),"key binding deleted by area id");
+    call(s,"AreaSetDelete",{int32_t(9)});check(s.mouse_scripts(4).empty(),"mouse binding deleted by area id");
 }
 }
 int main(){try{normalization();geometry();dynamic();std::cout<<"areas: 3 groups passed\n";}catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
