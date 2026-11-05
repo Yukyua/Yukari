@@ -544,12 +544,13 @@ struct Scene::Impl {
     struct Image {
         std::shared_ptr<SDL_Texture> texture;
         std::shared_ptr<SDL_Surface> pixels, native_mask;
-        std::shared_ptr<GpuPixels> gpu; bool pixels_valid{true}; uint64_t revision{};
+        std::shared_ptr<GpuPixels> gpu,gpu_mask; bool pixels_valid{true},texture_valid{true}; uint64_t revision{};
     };
     struct Layer {
         std::shared_ptr<Image> image, original;
         uint32_t add_color{}, sub_color{};
         bool sepia{}, monochrome{}, negaposi{};
+        bool filter_dirty{};
         int filter_mode{};
         int image_type{2};
         double scale_x{1}, scale_y{1}, rotation{};
@@ -586,7 +587,7 @@ struct Scene::Impl {
     // The token expires before SDL destroys renderer-owned textures. Frames may
     // outlive Scene, but cannot be used after their owner has gone away.
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
-    Texture composite{nullptr, SDL_DestroyTexture};
+    Texture composite{nullptr, SDL_DestroyTexture},transition_composite{nullptr,SDL_DestroyTexture};
     Texture prefix_cache{nullptr, SDL_DestroyTexture};int prefix_cutoff{};
     std::map<int, Layer> layers;
     std::map<std::pair<std::string,Bytes>, std::weak_ptr<Image>> image_cache;
@@ -624,7 +625,7 @@ struct Scene::Impl {
         info = {actual.name, bool(actual.flags & SDL_RENDERER_ACCELERATED), bool(SDL_RenderTargetSupported(renderer.get()))};
         if (!info.target_textures) throw std::runtime_error("renderer does not support composition targets");
         check(SDL_RenderSetLogicalSize(renderer.get(), w, h));
-        composite = target(w, h);
+        composite = target(w, h);transition_composite=target(w,h);
         gpu_ops=GpuOps::create(renderer.get());
     }
     Texture target(int w, int h) {
@@ -659,17 +660,19 @@ struct Scene::Impl {
         if(!gpu_ops){auto image=upload_image(decode_image(bytes,extra_mask));image->native_mask=native_mask(bytes,extra_mask);return image;}
         Bytes color=bytes,internal;
         if(bytes.size()>=6&&std::memcmp(bytes.data(),"YKG000",6)==0){auto graphic=parse_graphic(bytes);color=std::move(graphic.color);internal=std::move(graphic.alpha);}
-        auto image=upload_image(decode_image(std::move(color)));std::shared_ptr<SDL_Surface> raw_mask;
+        auto image=upload_image(decode_image(std::move(color)));std::shared_ptr<SDL_Surface> raw_mask;std::shared_ptr<GpuPixels> gpu_mask;
         for(const auto* bytes:std::array<const Bytes*,2>{&internal,&extra_mask})if(!bytes->empty()){
             auto mask=decode_image(*bytes);if(mask->w!=image->pixels->w||mask->h!=image->pixels->h)throw std::runtime_error("color and alpha mask dimensions differ");
-            raw_mask={mask.release(),SDL_FreeSurface};auto pixels=gpu_ops->run(GpuOps::AlphaMask,gpu_pixels(image),gpu_ops->upload(raw_mask.get()),{},{},image->pixels->w,image->pixels->h);image=gpu_image(std::move(pixels));
+            raw_mask={mask.release(),SDL_FreeSurface};gpu_mask=gpu_ops->upload(raw_mask.get());auto pixels=gpu_ops->run(GpuOps::AlphaMask,gpu_pixels(image),gpu_mask,{},{},image->pixels->w,image->pixels->h);image=gpu_image(std::move(pixels));
         }
-        image->native_mask=std::move(raw_mask);return image;
+        image->native_mask=std::move(raw_mask);image->gpu_mask=std::move(gpu_mask);return image;
     }
     std::shared_ptr<Image> cached_image(const std::string& key,const Bytes& mask,const std::function<std::shared_ptr<Image>()>& decode){
         auto found=image_cache.find({key,mask});auto image=found==image_cache.end()?std::shared_ptr<Image>{}:found->second.lock();
         if(!image){image=decode();image_cache[{key,mask}]=image;}else{++stats.shared_loads;++stats.resource_cache_hits;}
-        const uint64_t bytes=uint64_t(image->pixels->w)*image->pixels->h*(gpu_ops?12:8)+(image->native_mask?uint64_t(image->native_mask->w)*image->native_mask->h*4:0);
+        const uint64_t bytes=uint64_t(image->pixels->w)*image->pixels->h*(gpu_ops?12:8)+
+            (image->native_mask?uint64_t(image->native_mask->w)*image->native_mask->h*4:0)+
+            (image->gpu_mask?uint64_t(image->gpu_mask->width)*image->gpu_mask->height*4:0);
         if(bytes<=resource_cache_limit){auto [it,inserted]=retained_images.try_emplace(image.get(),CachedImage{image,0,bytes});if(inserted)stats.resource_cache_bytes+=bytes;it->second.stamp=++cache_stamp;
             while(stats.resource_cache_bytes>resource_cache_limit||retained_images.size()>64){auto oldest=std::min_element(retained_images.begin(),retained_images.end(),[](const auto& a,const auto& b){return a.second.stamp<b.second.stamp;});stats.resource_cache_bytes-=oldest->second.bytes;retained_images.erase(oldest);}}
         if(image_cache.size()>128){for(auto it=image_cache.begin();it!=image_cache.end();){if(it->second.expired())it=image_cache.erase(it);else ++it;}}
@@ -697,17 +700,29 @@ struct Scene::Impl {
         if(!image->gpu)image->gpu=gpu_ops->upload(image->pixels.get());
         return image->gpu;
     }
+    std::shared_ptr<GpuPixels> gpu_native_mask(const std::shared_ptr<Image>& image){
+        if(image->native_mask&&!image->gpu_mask)image->gpu_mask=gpu_ops->upload(image->native_mask.get());
+        return image->gpu_mask;
+    }
     void host_pixels(const std::shared_ptr<Image>& image) {
         if(!image->pixels_valid){gpu_ops->read(image->gpu,image->pixels.get());image->pixels_valid=true;++stats.readbacks;stats.readback_pixels+=uint64_t(image->pixels->w)*image->pixels->h;}
     }
     std::shared_ptr<Image> gpu_image(std::shared_ptr<GpuPixels> pixels,std::shared_ptr<SDL_Texture> reuse={}) {
-        auto image=std::make_shared<Image>();image->gpu=std::move(pixels);image->pixels_valid=false;
+        auto image=std::make_shared<Image>();image->gpu=std::move(pixels);image->pixels_valid=false;image->texture_valid=false;
         image->pixels={SDL_CreateRGBSurfaceWithFormat(0,image->gpu->width,image->gpu->height,32,SDL_PIXELFORMAT_RGBA32),SDL_FreeSurface};
         if(!image->pixels)throw std::runtime_error(SDL_GetError());
         if(reuse)image->texture=std::move(reuse);
         else{auto output=target(image->gpu->width,image->gpu->height);std::weak_ptr<int> owner=lifetime;image->texture={output.release(),[owner](SDL_Texture* t){if(!owner.expired())SDL_DestroyTexture(t);}};}
-        {TargetScope scope(*this,image->texture.get(),image->gpu->width,image->gpu->height);gpu_ops->write_target(image->texture.get(),image->gpu);}
         ++stats.gpu_operations;return image;
+    }
+    SDL_Texture* texture(const std::shared_ptr<Image>& image) {
+        if(!image)throw std::runtime_error("missing render image");
+        if(!image->texture_valid){
+            if(!gpu_ops||!image->gpu)throw std::runtime_error("render image has no GPU pixels");
+            TargetScope scope(*this,image->texture.get(),image->gpu->width,image->gpu->height);
+            gpu_ops->write_target(image->texture.get(),image->gpu);image->texture_valid=true;
+        }
+        return image->texture.get();
     }
     Layer& layer(int id) {
         auto it = layers.find(id);
@@ -716,13 +731,14 @@ struct Scene::Impl {
     }
     void filter(Layer& value) {
         if (!value.original) throw std::runtime_error("image color operation requires an image layer");
+        value.filter_dirty=false;
         const auto enabled = [](uint32_t color) { return color != 0 && color != 0xffffffff; };
         if (!enabled(value.add_color) && !enabled(value.sub_color) && !value.sepia && !value.monochrome && !value.negaposi) {
             value.image = value.original; return;
         }
         if(gpu_ops){
             std::array<int,16> p{};p[0]=enabled(value.add_color);p[1]=int(value.add_color);p[2]=enabled(value.sub_color);p[3]=int(value.sub_color);p[4]=value.sepia;p[5]=value.monochrome;p[6]=value.negaposi;
-            value.image=gpu_image(gpu_ops->run(GpuOps::Filter,gpu_pixels(value.original),{},{},p,value.width,value.height));value.image->native_mask=value.original->native_mask;return;
+            value.image=gpu_image(gpu_ops->run(GpuOps::Filter,gpu_pixels(value.original),{},{},p,value.width,value.height));value.image->native_mask=value.original->native_mask;value.image->gpu_mask=value.original->gpu_mask;return;
         }
         Surface result(SDL_ConvertSurfaceFormat(value.original->pixels.get(), SDL_PIXELFORMAT_RGBA32, 0), SDL_FreeSurface);
         if (!result) throw std::runtime_error(SDL_GetError());
@@ -766,21 +782,34 @@ struct Scene::Impl {
     void draw_image(const Layer* layer, SDL_BlendMode blend, int alpha) {
             SDL_Rect dst{layer->x, layer->y, layer->destination_width, layer->destination_height};
             if (dst.w > 0 && dst.h > 0) {
-                check(SDL_SetTextureBlendMode(layer->image->texture.get(), blend));
-                check(SDL_SetTextureAlphaMod(layer->image->texture.get(), uint8_t(alpha)));
+                auto* image=texture(layer->image);
+                check(SDL_SetTextureBlendMode(image, blend));
+                check(SDL_SetTextureAlphaMod(image, uint8_t(alpha)));
                 if (layer->scale_x == 1 && layer->scale_y == 1 && layer->rotation == 0) {
-                    if (!layer->raster_enabled) check(SDL_RenderCopy(renderer.get(), layer->image->texture.get(), &layer->clip, &dst));
-                    else for(int row=0;row<layer->clip.h;++row) {
+                    if (!layer->raster_enabled) check(SDL_RenderCopy(renderer.get(), image, &layer->clip, &dst));
+                    else {
+                      std::vector<SDL_Vertex> vertices;std::vector<int> indices;
+                      vertices.reserve(size_t(std::min(layer->clip.h,8192))*4);indices.reserve(size_t(std::min(layer->clip.h,8192))*6);
+                      const auto flush=[&]{if(vertices.empty())return;check(SDL_RenderGeometry(renderer.get(),image,vertices.data(),int(vertices.size()),indices.data(),int(indices.size())));vertices.clear();indices.clear();};
+                      for(int row=0;row<layer->clip.h;++row) {
                         // 0x4140f0 uses truncation before adding row, then the
                         // original 3.141592 constant and full source height.
                         const uint32_t wrapped=uint32_t(int32_t(layer->raster_phase))+uint32_t(row);
                         int32_t phase;std::memcpy(&phase,&wrapped,sizeof phase);
                         const double offset=std::sin(double(phase)/layer->height*layer->raster_frequency*3.141592)*layer->raster_amplitude;
                         const int shift=offset>=INT32_MIN&&offset<=INT32_MAX?int(offset):INT32_MIN;
-                        SDL_Rect src{layer->clip.x,layer->clip.y+row,layer->clip.w,1};
                         const int top=int(int64_t(row)*dst.h/layer->clip.h),bottom=int(int64_t(row+1)*dst.h/layer->clip.h);
-                        SDL_Rect target{int(int64_t(dst.x)+shift),dst.y+top,dst.w,bottom-top};
-                        if(target.h>0)check(SDL_RenderCopy(renderer.get(),layer->image->texture.get(),&src,&target));
+                        if(bottom<=top)continue;
+                        const int base=int(vertices.size()),left=int(int64_t(dst.x)+shift),right=left+dst.w;
+                        const float u0=float(layer->clip.x)/layer->width,u1=float(layer->clip.x+layer->clip.w)/layer->width;
+                        const float v0=float(layer->clip.y+row)/layer->height,v1=float(layer->clip.y+row+1)/layer->height;
+                        const SDL_Color color{255,255,255,uint8_t(alpha)};
+                        vertices.push_back({{float(left),float(dst.y+top)},color,{u0,v0}});vertices.push_back({{float(right),float(dst.y+top)},color,{u1,v0}});
+                        vertices.push_back({{float(right),float(dst.y+bottom)},color,{u1,v1}});vertices.push_back({{float(left),float(dst.y+bottom)},color,{u0,v1}});
+                        for(int n:{0,1,2,0,2,3})indices.push_back(base+n);
+                        if(vertices.size()>=32768)flush();
+                      }
+                      flush();
                     }
                 }
                 else {
@@ -805,7 +834,7 @@ struct Scene::Impl {
                                        {255,255,255,uint8_t(alpha)}, uv[i]};
                     }
                     static const int indices[6] = {0,1,2,0,2,3};
-                    check(SDL_RenderGeometry(renderer.get(), layer->image->texture.get(), vertices, 4, indices, 6));
+                    check(SDL_RenderGeometry(renderer.get(), image, vertices, 4, indices, 6));
                 }
             }
     }
@@ -840,6 +869,7 @@ struct Scene::Impl {
         check(SDL_RenderCopy(renderer.get(),image->texture.get(),nullptr,nullptr));
     }
     void compose(std::optional<int> through={},bool use_cache=true) {
+        for(auto& [id,layer]:layers)if(layer.filter_dirty)filter(layer);
         // Compare exact drawing state rather than a hash. Weak ownership keeps
         // the text texture reuse and resource LRU lifetimes unchanged.
         std::vector<DrawState> state;
@@ -852,16 +882,21 @@ struct Scene::Impl {
                    return a.key==b.key&&!a.image.owner_before(b.image)&&!b.image.owner_before(a.image);
                })){++stats.composition_reuses;return;}
         }
+        std::vector<const Layer*> sorted;
+        for (const auto& item : layers) if (item.second.visible&&(!through||item.first<=*through)&&
+            !(use_cache&&prefix_cache&&item.first<=prefix_cutoff)) sorted.push_back(&item.second);
+        std::stable_sort(sorted.begin(), sorted.end(), [](const Layer* a, const Layer* b) { return a->z < b->z; });
+        // Export all pending Metal images before selecting the composition
+        // target. The first export submits the shared compute command buffer;
+        // subsequent exports reuse that completed batch and avoid interrupting
+        // SDL's layer draw encoder with target switches.
+        for(const auto* layer:sorted)if(layer->image&&layer->alpha&&!layer->filter_mode)texture(layer->image);
         composite_valid=false;
         TargetScope target(*this, composite.get(), width, height);
         ++stats.compositions;
         check(SDL_SetRenderDrawColor(renderer.get(), 0, 0, 0, 255));
         check(SDL_RenderClear(renderer.get()));
         if(use_cache&&prefix_cache){check(SDL_SetTextureBlendMode(prefix_cache.get(),SDL_BLENDMODE_NONE));check(SDL_RenderCopy(renderer.get(),prefix_cache.get(),nullptr,nullptr));}
-        std::vector<const Layer*> sorted;
-        for (const auto& item : layers) if (item.second.visible&&(!through||item.first<=*through)&&
-            !(use_cache&&prefix_cache&&item.first<=prefix_cutoff)) sorted.push_back(&item.second);
-        std::stable_sort(sorted.begin(), sorted.end(), [](const Layer* a, const Layer* b) { return a->z < b->z; });
         for (const auto* layer : sorted) {
             if (layer->filter_mode) filter_prefix(layer->filter_mode);
             else if (!layer->alpha) continue;
@@ -919,8 +954,9 @@ void Scene::load_deferred(int id,const std::string& key,std::function<Bytes()> l
     if(!loader)throw std::runtime_error("resource loader is missing");auto image=impl_->cached_image(key,mask,[&]{auto bytes=loader();return impl_->resource_image(bytes,mask);});impl_->image(id,std::move(image),x,y);
 }
 void Scene::copy(int id, int source, int x, int y) {
-    const int type = impl_->layer(source).image_type;
-    auto image = impl_->layer(source).image;
+    auto& source_layer=impl_->layer(source);if(source_layer.filter_dirty)impl_->filter(source_layer);
+    const int type = source_layer.image_type;
+    auto image = source_layer.image;
     if (!image) throw std::runtime_error("cannot copy a GraphicFilter layer as an image");
     impl_->image(id, std::move(image), x, y); ++impl_->stats.shared_loads;
     impl_->layer(id).image_type = type;
@@ -935,12 +971,13 @@ void Scene::create_canvas(int id,int width,int height,int x,int y){
     impl_->image(id,impl_->upload_image(std::move(pixels)),x,y);
 }
 void Scene::paint(int destination,int source,SDL_Rect rect){
-    auto& dest=impl_->layer(destination);const auto& src=impl_->layer(source);
+    auto& dest=impl_->layer(destination);auto& src=impl_->layer(source);
+    if(src.filter_dirty)impl_->filter(src);
     if(!dest.original||!src.image)throw std::runtime_error("canvas paint requires bitmap layers");
     if(rect.w<=0||rect.h<=0||rect.w>16384||rect.h>16384||uint64_t(rect.w)*rect.h>16000000)
         throw std::runtime_error("invalid canvas paint dimensions");
     if(impl_->gpu_ops){std::array<int,16> p{};p[0]=rect.x;p[1]=rect.y;p[2]=rect.w;p[3]=rect.h;
-        dest.original=impl_->gpu_image(impl_->gpu_ops->run(GpuOps::Paint,impl_->gpu_pixels(dest.original),impl_->gpu_pixels(src.image),{},p,dest.width,dest.height));impl_->filter(dest);return;}
+        dest.original=impl_->gpu_image(impl_->gpu_ops->run(GpuOps::Paint,impl_->gpu_pixels(dest.original),impl_->gpu_pixels(src.image),{},p,dest.width,dest.height));dest.filter_dirty=true;return;}
     Surface result(SDL_ConvertSurfaceFormat(dest.original->pixels.get(),SDL_PIXELFORMAT_RGBA32,0),SDL_FreeSurface);
     Surface scaled(SDL_CreateRGBSurfaceWithFormat(0,rect.w,rect.h,32,SDL_PIXELFORMAT_RGBA32),SDL_FreeSurface);
     Surface input(SDL_ConvertSurfaceFormat(src.image->pixels.get(),SDL_PIXELFORMAT_RGBA32,0),SDL_FreeSurface);
@@ -960,7 +997,7 @@ void Scene::paint(int destination,int source,SDL_Rect rect){
         d[3]=uint8_t((a+127)/255);
     }
     dest.original=impl_->upload_image(std::move(result));
-    impl_->filter(dest);
+    dest.filter_dirty=true;
 }
 void Scene::set_glyph_color(int id,uint32_t colorref,const SDL_Rect* region){
     auto& layer=impl_->layer(id);
@@ -974,7 +1011,7 @@ void Scene::set_glyph_color(int id,uint32_t colorref,const SDL_Rect* region){
     const int bottom=int(std::min<int64_t>(layer.height,int64_t(area.y)+area.h));
     if(left>=right||top>=bottom)return;
     if(impl_->gpu_ops){std::array<int,16> p{};p[0]=left;p[1]=top;p[2]=right-left;p[3]=bottom-top;p[4]=int(colorref);
-        auto changed=impl_->gpu_image(impl_->gpu_ops->run(GpuOps::Tint,impl_->gpu_pixels(layer.original),{},{},p,layer.width,layer.height));changed->native_mask=layer.original->native_mask;layer.original=std::move(changed);impl_->filter(layer);return;}
+        auto changed=impl_->gpu_image(impl_->gpu_ops->run(GpuOps::Tint,impl_->gpu_pixels(layer.original),{},{},p,layer.width,layer.height));changed->native_mask=layer.original->native_mask;changed->gpu_mask=layer.original->gpu_mask;layer.original=std::move(changed);layer.filter_dirty=true;return;}
     Surface pixels(SDL_ConvertSurfaceFormat(layer.original->pixels.get(),SDL_PIXELFORMAT_RGBA32,0),SDL_FreeSurface);
     if(!pixels)throw std::runtime_error(SDL_GetError());
     for(int y=top;y<bottom;++y)for(int x=left;x<right;++x){
@@ -982,10 +1019,10 @@ void Scene::set_glyph_color(int id,uint32_t colorref,const SDL_Rect* region){
         for(int c=0;c<3;++c)p[c]=uint8_t(colorref>>(8*c));
     }
     auto changed=impl_->upload_image(std::move(pixels));changed->native_mask=layer.original->native_mask;
-    layer.original=std::move(changed);impl_->filter(layer);
+    layer.original=std::move(changed);layer.filter_dirty=true;
 }
 Bytes Scene::layer_pixels(int id) const {
-    const auto& layer=impl_->layer(id);
+    auto& layer=impl_->layer(id);if(layer.filter_dirty)impl_->filter(layer);
     if(!layer.image)throw std::runtime_error("GraphicFilter has no bitmap snapshot");
     Bytes out={'Y','U','K','A','P','I','X','L'};
     auto put=[&](uint32_t value){for(unsigned i=0;i<4;++i)out.push_back(uint8_t(value>>(8*i)));};
@@ -1010,7 +1047,8 @@ Bytes Scene::resource_thumbnail(const Bytes& bytes,int width,int height){
     if(!impl_->gpu_ops)return image_thumbnail(bytes,width,height);
     auto image=impl_->resource_image(bytes,{});auto output=impl_->target(width,height);
     Surface pixels(SDL_CreateRGBSurfaceWithFormat(0,width,height,32,SDL_PIXELFORMAT_RGBA32),SDL_FreeSurface);if(!pixels)throw std::runtime_error(SDL_GetError());
-    {Impl::TargetScope scope(*impl_,output.get(),width,height);check(SDL_SetTextureBlendMode(image->texture.get(),SDL_BLENDMODE_NONE));check(SDL_RenderCopy(renderer(),image->texture.get(),nullptr,nullptr));check(SDL_RenderReadPixels(renderer(),nullptr,SDL_PIXELFORMAT_RGBA32,pixels->pixels,pixels->pitch));}
+    auto* texture=impl_->texture(image);
+    {Impl::TargetScope scope(*impl_,output.get(),width,height);check(SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_NONE));check(SDL_RenderCopy(renderer(),texture,nullptr,nullptr));check(SDL_RenderReadPixels(renderer(),nullptr,SDL_PIXELFORMAT_RGBA32,pixels->pixels,pixels->pitch));}
     ++impl_->stats.gpu_operations;++impl_->stats.readbacks;impl_->stats.readback_pixels+=uint64_t(width)*height;return encode_surface(pixels.get());
 }
 void Scene::restore_layer_pixels(int id,const Bytes& bytes) {
@@ -1035,12 +1073,13 @@ void Scene::restore_layer_pixels(int id,const Bytes& bytes) {
     };
     auto current=image(),original=separate?image():current;
     if(at!=bytes.size())throw std::runtime_error("trailing bitmap snapshot bytes");
-    layer.image=std::move(current);layer.original=std::move(original);layer.image_type=int(type);
+    layer.image=std::move(current);layer.original=std::move(original);layer.image_type=int(type);layer.filter_dirty=false;
 }
 void Scene::blit(int destination,int x,int y,int source,SDL_Rect rect,NativePixelKernel kernel){
     auto dest_it=impl_->layers.find(destination),source_it=impl_->layers.find(source);
     if(dest_it==impl_->layers.end()||source_it==impl_->layers.end())return;
-    auto& dest=dest_it->second;const auto& src=source_it->second;
+    auto& dest=dest_it->second;auto& src=source_it->second;
+    if(dest.filter_dirty)impl_->filter(dest);if(&src!=&dest&&src.filter_dirty)impl_->filter(src);
     if(!dest.image||!src.image)throw std::runtime_error("native GraphicCopy requires bitmap layers");
     int64_t dx=x,dy=y,sx=rect.x,sy=rect.y,ex=sx+rect.w,ey=sy+rect.h;
     if(dx<0){sx-=dx;dx=0;}if(dy<0){sy-=dy;dy=0;}
@@ -1050,8 +1089,8 @@ void Scene::blit(int destination,int x,int y,int source,SDL_Rect rect,NativePixe
     if(ex<=sx||ey<=sy)return;
     if(impl_->gpu_ops){
         std::array<int,16> p{};p[0]=int(dx);p[1]=int(dy);p[2]=int(sx);p[3]=int(sy);p[4]=int(ex-sx);p[5]=int(ey-sy);p[6]=src.image_type;p[7]=kernel==NativePixelKernel::Mmx;p[8]=bool(src.image->native_mask);
-        auto mask=src.image->native_mask?impl_->gpu_ops->upload(src.image->native_mask.get()):std::shared_ptr<GpuPixels>{};
-        auto previous=dest.image;auto changed=impl_->gpu_image(impl_->gpu_ops->run(destination==source?GpuOps::SelfBlit:GpuOps::Blit,impl_->gpu_pixels(previous),impl_->gpu_pixels(src.image),mask,p,dest.width,dest.height));changed->native_mask=previous->native_mask;dest.image=changed;if(dest.original==previous)dest.original=changed;return;
+        auto mask=impl_->gpu_native_mask(src.image);
+        auto previous=dest.image;auto changed=impl_->gpu_image(impl_->gpu_ops->run(destination==source?GpuOps::SelfBlit:GpuOps::Blit,impl_->gpu_pixels(previous),impl_->gpu_pixels(src.image),mask,p,dest.width,dest.height));changed->native_mask=previous->native_mask;changed->gpu_mask=previous->gpu_mask;dest.image=changed;if(dest.original==previous)dest.original=changed;return;
     }
     impl_->host_pixels(dest.image);impl_->host_pixels(src.image);
     Surface result(SDL_ConvertSurfaceFormat(dest.image->pixels.get(),SDL_PIXELFORMAT_RGBA32,0),SDL_FreeSurface);
@@ -1120,7 +1159,7 @@ void Scene::text(int id, const std::string& utf8, int x, int y, int width, int h
         found->second.image.use_count() == 2 &&
         found->second.width == width && found->second.height == height) {
         check(SDL_UpdateTexture(found->second.image->texture.get(), nullptr, surface->pixels, surface->pitch));
-        found->second.image->pixels = std::shared_ptr<SDL_Surface>(surface.release(), SDL_FreeSurface);found->second.image->gpu.reset();found->second.image->pixels_valid=true;++found->second.image->revision;
+        found->second.image->pixels = std::shared_ptr<SDL_Surface>(surface.release(), SDL_FreeSurface);found->second.image->gpu.reset();found->second.image->pixels_valid=true;found->second.image->texture_valid=true;++found->second.image->revision;
         found->second.x = x; found->second.y = y; ++impl_->stats.texture_updates;
     } else {
         impl_->image(id, impl_->upload_image(std::move(surface)), x, y);
@@ -1155,7 +1194,7 @@ void Scene::positioned_text(int id,const std::vector<PositionedText>& runs,SDL_R
     if(found!=impl_->layers.end()&&found->second.text&&found->second.image==found->second.original&&found->second.image.use_count()==2&&
        found->second.width==clip.w&&found->second.height==clip.h){
         check(SDL_UpdateTexture(found->second.image->texture.get(),nullptr,surface->pixels,surface->pitch));
-        found->second.image->pixels=std::shared_ptr<SDL_Surface>(surface.release(),SDL_FreeSurface);found->second.image->gpu.reset();found->second.image->pixels_valid=true;++found->second.image->revision;
+        found->second.image->pixels=std::shared_ptr<SDL_Surface>(surface.release(),SDL_FreeSurface);found->second.image->gpu.reset();found->second.image->pixels_valid=true;found->second.image->texture_valid=true;++found->second.image->revision;
         found->second.x=clip.x;found->second.y=clip.y;++impl_->stats.texture_updates;
     }else{impl_->image(id,impl_->upload_image(std::move(surface)),clip.x,clip.y);impl_->layer(id).text=true;}
     remember();
@@ -1192,14 +1231,14 @@ void Scene::set_alpha(int id, int alpha) {
     impl_->layer(id).alpha = std::clamp(alpha, 0, 255);
 }
 void Scene::set_add_color(int id, uint32_t colorref) {
-    auto& layer = impl_->layer(id); layer.add_color = colorref; impl_->filter(layer);
+    auto& layer = impl_->layer(id); layer.add_color = colorref; layer.filter_dirty=true;
 }
 void Scene::set_sub_color(int id, uint32_t colorref) {
-    auto& layer = impl_->layer(id); layer.sub_color = colorref; impl_->filter(layer);
+    auto& layer = impl_->layer(id); layer.sub_color = colorref; layer.filter_dirty=true;
 }
-void Scene::set_sepia(int id, bool enabled) { auto& layer = impl_->layer(id); layer.sepia = enabled; impl_->filter(layer); }
-void Scene::set_monochrome(int id, bool enabled) { auto& layer = impl_->layer(id); layer.monochrome = enabled; impl_->filter(layer); }
-void Scene::set_negaposi(int id, bool enabled) { auto& layer = impl_->layer(id); layer.negaposi = enabled; impl_->filter(layer); }
+void Scene::set_sepia(int id, bool enabled) { auto& layer = impl_->layer(id); layer.sepia = enabled; layer.filter_dirty=true; }
+void Scene::set_monochrome(int id, bool enabled) { auto& layer = impl_->layer(id); layer.monochrome = enabled; layer.filter_dirty=true; }
+void Scene::set_negaposi(int id, bool enabled) { auto& layer = impl_->layer(id); layer.negaposi = enabled; layer.filter_dirty=true; }
 void Scene::create_filter(int id, int mode) {
     if (mode < 1 || mode > 4) throw std::runtime_error("invalid native GraphicFilter mode");
     Impl::Layer layer; layer.z = id; layer.filter_mode = mode;
@@ -1323,14 +1362,13 @@ void Scene::render_transition(const Frame& old,int mode,double progress,const By
             if(impl_->gpu_masks.size()>=32)impl_->gpu_masks.clear();
             found=impl_->gpu_masks.emplace(key,impl_->gpu_image(impl_->gpu_ops->run(GpuOps::Mask,{},input,{},parameters,width(),height()))).first;
         }
-        auto masked=impl_->target(width(),height());
-        {Impl::TargetScope scope(*impl_,masked.get(),width(),height());
+        auto* mask=impl_->texture(found->second);auto* masked=impl_->transition_composite.get();
+        {Impl::TargetScope scope(*impl_,masked,width(),height());
             check(SDL_SetTextureAlphaMod(old.texture_.get(),255));check(SDL_SetTextureBlendMode(old.texture_.get(),SDL_BLENDMODE_NONE));check(SDL_RenderCopy(renderer(),old.texture_.get(),nullptr,nullptr));
-            auto* mask=found->second->texture.get();
             const auto multiply_alpha=SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ZERO,SDL_BLENDFACTOR_ONE,SDL_BLENDOPERATION_ADD,SDL_BLENDFACTOR_ZERO,SDL_BLENDFACTOR_SRC_ALPHA,SDL_BLENDOPERATION_ADD);
             check(SDL_SetTextureBlendMode(mask,multiply_alpha));check(SDL_SetTextureAlphaMod(mask,alpha));check(SDL_RenderCopy(renderer(),mask,nullptr,nullptr));
         }
-        check(SDL_SetTextureBlendMode(masked.get(),SDL_BLENDMODE_BLEND));check(SDL_RenderCopy(renderer(),masked.get(),nullptr,nullptr));++impl_->stats.gpu_operations;return;
+        check(SDL_SetTextureBlendMode(masked,SDL_BLENDMODE_BLEND));check(SDL_RenderCopy(renderer(),masked,nullptr,nullptr));++impl_->stats.gpu_operations;return;
     }
     const auto key=std::make_pair(user?0:mode,user_mask);
     auto found=impl_->transition_masks.find(key);
@@ -1453,7 +1491,7 @@ void Scene::render_effect(const Frame& frame,int mode,int amplitude,unsigned ste
     const auto offset=effect_offset(mode,amplitude,step);render_frozen(frame,offset.x,offset.y);
 }
 RendererInfo Scene::renderer_info() const { return impl_->info; }
-RenderStats Scene::render_stats() const { auto stats=impl_->stats;if(impl_->text_rasterizer){stats.glyph_cache_hits=impl_->text_rasterizer->cache_hits+impl_->text_rasterizer->native_fonts.cache_hits();stats.glyph_rasterizations=impl_->text_rasterizer->rasterizations+impl_->text_rasterizer->native_fonts.rasterizations();}return stats; }
+RenderStats Scene::render_stats() const { auto stats=impl_->stats;if(impl_->gpu_ops){stats.gpu_submissions=impl_->gpu_ops->submissions();stats.gpu_uploads=impl_->gpu_ops->uploads();}if(impl_->text_rasterizer){stats.glyph_cache_hits=impl_->text_rasterizer->cache_hits+impl_->text_rasterizer->native_fonts.cache_hits();stats.glyph_rasterizations=impl_->text_rasterizer->rasterizations+impl_->text_rasterizer->native_fonts.rasterizations();}return stats; }
 void Scene::capture(const std::filesystem::path& path) {
     impl_->render();
     int w{}, h{};

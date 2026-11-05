@@ -18,6 +18,8 @@ public:
     // switch targets after this call before issuing any SDL drawing commands.
     void write_target(SDL_Texture* target,const std::shared_ptr<GpuPixels>& image);
     void read(const std::shared_ptr<GpuPixels>& image,SDL_Surface* output);
+    uint64_t submissions() const;
+    uint64_t uploads() const;
 private:
     struct Impl;std::unique_ptr<Impl> impl_;
     explicit GpuOps(SDL_Renderer* renderer);

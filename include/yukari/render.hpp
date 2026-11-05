@@ -28,7 +28,7 @@ struct PositionedText {
 struct RenderStats {
     uint64_t uploads{}, texture_updates{}, shared_loads{}, snapshots{}, readbacks{}, readback_pixels{};
     uint64_t glyph_cache_hits{}, glyph_rasterizations{};
-    uint64_t gpu_operations{};
+    uint64_t gpu_operations{},gpu_submissions{},gpu_uploads{};
     uint64_t compositions{},composition_reuses{},text_layout_reuses{},text_appends{};
     uint64_t image_decodes{},resource_cache_hits{},resource_cache_bytes{};
 };

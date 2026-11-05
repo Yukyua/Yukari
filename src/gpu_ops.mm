@@ -88,7 +88,7 @@ void failure(NSError* error,const char* what){throw std::runtime_error(std::stri
 }
 struct GpuPixels::Impl {id<MTLTexture> texture;explicit Impl(id<MTLTexture> t):texture(t){}~Impl(){[texture release];}};
 struct GpuOps::Impl {
- SDL_Renderer* renderer;id<MTLDevice> device;id<MTLCommandQueue> queue;id<MTLComputePipelineState> compute,self_copy,text_over;id<MTLCommandBuffer> last=nil,pending=nil;id<MTLRenderPipelineState> copy;
+ SDL_Renderer* renderer;id<MTLDevice> device;id<MTLCommandQueue> queue;id<MTLComputePipelineState> compute,self_copy,text_over;id<MTLCommandBuffer> last=nil,pending=nil;id<MTLRenderPipelineState> copy;uint64_t submissions{},uploads{};
  Impl(SDL_Renderer* r):renderer(r){
   CAMetalLayer* layer=(CAMetalLayer*)SDL_RenderGetMetalLayer(r);device=[layer.device retain];if(!device)throw std::runtime_error("SDL Metal device unavailable");
   queue=[device newCommandQueue];NSError* error=nil;MTLCompileOptions* options=[[MTLCompileOptions alloc]init];if(@available(macOS 15.0,*))options.mathMode=MTLMathModeSafe;
@@ -103,14 +103,14 @@ struct GpuOps::Impl {
   MTLRenderPipelineDescriptor* desc=[[MTLRenderPipelineDescriptor alloc]init];desc.vertexFunction=[library newFunctionWithName:@"image_vertex"];desc.fragmentFunction=[library newFunctionWithName:@"image_fragment"];desc.colorAttachments[0].pixelFormat=MTLPixelFormatRGBA8Unorm;
   copy=[device newRenderPipelineStateWithDescriptor:desc error:&error];[desc.vertexFunction release];[desc.fragmentFunction release];[desc release];[library release];if(!copy)failure(error,"Metal image copy");
  }
- void flush(){if(pending){[pending commit];[last release];last=pending;pending=nil;}}
+ void flush(){if(pending){[pending commit];++submissions;[last release];last=pending;pending=nil;}}
  ~Impl(){flush();[last waitUntilCompleted];[last release];[self_copy release];[text_over release];[copy release];[compute release];[queue release];[device release];}
  std::shared_ptr<GpuPixels> image(int w,int h){MTLTextureDescriptor* d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:NO];d.usage=MTLTextureUsageShaderRead|MTLTextureUsageShaderWrite;d.storageMode=MTLStorageModeShared;auto t=[device newTextureWithDescriptor:d];if(!t)throw std::runtime_error("Metal image allocation failed");auto out=std::make_shared<GpuPixels>();out->width=w;out->height=h;out->impl=std::make_shared<GpuPixels::Impl>(t);return out;}
 };
 GpuOps::GpuOps(SDL_Renderer* r):impl_(std::make_unique<Impl>(r)){}
 GpuOps::~GpuOps()=default;
 std::unique_ptr<GpuOps> GpuOps::create(SDL_Renderer* r){SDL_RendererInfo info{};if(SDL_GetRendererInfo(r,&info)||std::strcmp(info.name,"metal"))return {};return std::unique_ptr<GpuOps>(new GpuOps(r));}
-std::shared_ptr<GpuPixels> GpuOps::upload(const SDL_Surface* pixels){@autoreleasepool{auto image=impl_->image(pixels->w,pixels->h);[image->impl->texture replaceRegion:MTLRegionMake2D(0,0,pixels->w,pixels->h) mipmapLevel:0 withBytes:pixels->pixels bytesPerRow:pixels->pitch];return image;}}
+std::shared_ptr<GpuPixels> GpuOps::upload(const SDL_Surface* pixels){@autoreleasepool{auto image=impl_->image(pixels->w,pixels->h);[image->impl->texture replaceRegion:MTLRegionMake2D(0,0,pixels->w,pixels->h) mipmapLevel:0 withBytes:pixels->pixels bytesPerRow:pixels->pitch];++impl_->uploads;return image;}}
 std::shared_ptr<GpuPixels> GpuOps::run(Operation op,const std::shared_ptr<GpuPixels>& destination,const std::shared_ptr<GpuPixels>& source,const std::shared_ptr<GpuPixels>& mask,const std::array<int,16>& p,int width,int height){@autoreleasepool{
  if(op==TextOver&&(p[0]>=width||p[1]>=height||int64_t(p[0])+p[2]<=0||int64_t(p[1])+p[3]<=0))return destination;
  auto out=op==TextOver?destination:impl_->image(width,height);auto a=destination?destination:out,b=source?source:a,m=mask?mask:a;
@@ -130,4 +130,6 @@ void GpuOps::write_target(SDL_Texture* target,const std::shared_ptr<GpuPixels>& 
  [encoder setRenderPipelineState:impl_->copy];[encoder setViewport:MTLViewport{0,0,double(image->width),double(image->height),0,1}];[encoder setScissorRect:MTLScissorRect{0,0,NSUInteger(image->width),NSUInteger(image->height)}];[encoder setCullMode:MTLCullModeNone];[encoder setFragmentTexture:image->impl->texture atIndex:0];[encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 }}
 void GpuOps::read(const std::shared_ptr<GpuPixels>& image,SDL_Surface* output){impl_->flush();[impl_->last waitUntilCompleted];if(impl_->last.status==MTLCommandBufferStatusError)failure(impl_->last.error,"Metal image readback");if(output->w!=image->width||output->h!=image->height)throw std::runtime_error("Metal readback dimensions differ");[image->impl->texture getBytes:output->pixels bytesPerRow:output->pitch fromRegion:MTLRegionMake2D(0,0,image->width,image->height) mipmapLevel:0];}
+uint64_t GpuOps::submissions() const{return impl_->submissions;}
+uint64_t GpuOps::uploads() const{return impl_->uploads;}
 }

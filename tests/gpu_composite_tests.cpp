@@ -46,5 +46,16 @@ int main(){try{
  incremental.resize(3);apply([&](Scene& s){s.positioned_text(17,incremental,{0,0,64,48});});compare(17,"shortened text");
  incremental[0].style.color={32,240,100,255};apply([&](Scene& s){s.positioned_text(17,incremental,{0,0,64,48});});compare(17,"restyled prefix");
  auto metrics=gpu.render_stats();check(metrics.gpu_operations>60,"tested operations did not enter GPU pipeline");std::cout<<cases<<" GPU/CPU cases, "<<bytes<<" RGBA bytes checked; GPU operations="<<metrics.gpu_operations<<". Integer operations exact; sepia tolerance 1.\n";
+ auto submissions=gpu.render_stats().gpu_submissions;gpu.create_canvas(30,64,48);load(31,source);
+ for(int i=0;i<8;++i)gpu.paint(30,31,{i*4,0,4,4});
+ check(gpu.render_stats().gpu_submissions==submissions,"GPU image operations submitted before drawing");gpu.draw();
+ check(gpu.render_stats().gpu_submissions==submissions+1,"chained GPU image operations were not submitted as one batch");
+ load(40,image);auto filter_operations=gpu.render_stats().gpu_operations;
+ gpu.set_add_color(40,0x102030);gpu.set_sub_color(40,0x010203);gpu.set_sepia(40,true);gpu.set_monochrome(40,true);gpu.set_negaposi(40,true);
+ check(gpu.render_stats().gpu_operations==filter_operations,"filter setters executed redundant full-image compute");gpu.draw();
+ check(gpu.render_stats().gpu_operations==filter_operations+1,"filter setters were not coalesced into one compute operation");
+ gpu.create_canvas(50,64,48);load(51,ykg);auto mask_uploads=gpu.render_stats().gpu_uploads;
+ for(int i=0;i<8;++i)gpu.blit(50,i,0,51,{0,0,8,8});
+ check(gpu.render_stats().gpu_uploads==mask_uploads,"repeated masked blits reuploaded the same GPU mask");
  return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

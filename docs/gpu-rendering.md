@@ -37,7 +37,7 @@ Metal 操作使用独立 command queue，连续操作合并到一个 command buf
 
 逐字文字复用相同前缀，通过复制旧 GPU 画布仅叠加新增字形，旧 GPU image 不被原位修改。文字更新复用独占的同尺寸 SDL target；共享图集与快照保持独立生命周期。转场遮罩按模式/资源缓存，alpha 在 GPU 混合时应用。
 
-静态画面按精确绘制状态复用整张合成纹理；位置、裁剪、变换、可见性、图像内容和前缀快照变化都会失效。相同文字布局可以直接复用。`RENDER_STATS` 提供 `compositions/composition_reuses/text_layout_reuses` 与 `gpu_operations`，`readbacks/readback_pixels` 同时统计修改后图像的显式导出。测试直接调用 SDL 的观察读回不计入 Scene 统计，因此这些计数用来验证运行路径，不是性能基准。
+静态画面按精确绘制状态复用整张合成纹理；位置、裁剪、变换、可见性、图像内容和前缀快照变化都会失效。相同文字布局可以直接复用。Metal compute 结果延迟到实际绘制时才导出；连续画布、滤镜和文字操作合并到同一个 command buffer，避免每步等待，连续颜色/单色/反相 setter 也只在消费前执行一次最终滤镜。逐行波形用批量 GPU geometry 提交，转场复用固定 render target，YKG 独立遮罩在 GraphicCopy 之间复用 GPU 纹理。`RENDER_STATS` 提供 `compositions/composition_reuses/text_layout_reuses`、`gpu_operations`、实际 compute `gpu_submissions` 与 CPU→GPU `gpu_uploads`，`readbacks/readback_pixels` 同时统计修改后图像的显式导出。测试直接调用 SDL 的观察读回不计入 Scene 统计，因此这些计数用来验证运行路径，不是性能基准。
 
 ## 验证
 
