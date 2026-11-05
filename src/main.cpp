@@ -3,6 +3,7 @@
 #include "yukari/runtime.hpp"
 #include "yukari/text_dump.hpp"
 #include "yukari/translation_patch.hpp"
+#include "yukari/original_scene.hpp"
 #include <charconv>
 #include <iostream>
 #include <stdexcept>
@@ -71,7 +72,16 @@ int validate_translation_patch(const std::filesystem::path& directory,const std:
     for(const auto& resource:resources.entries()){
         std::string name=resource.entry.name;for(char& c:name)if(c>='A'&&c<='Z')c=char(c-'A'+'a');
         if(name.size()<4||name.compare(name.size()-4,4,".yks"))continue;
-        matched+=patch.verify(yukari::parse_script(resources.read(resource.entry.name)),resource.entry.name);++scripts;
+        auto script=yukari::parse_script(resources.read(resource.entry.name));
+        matched+=patch.verify(script,resource.entry.name);
+        if(patch.encoding()){
+            auto translated=patch.apply(std::move(script),resource.entry.name);
+            for(const auto& element:translated.elements)if(element.type==5&&!element.source_text.empty()){
+                try{yukari::encode_original_text(element.text,patch.encoding()->c_str());}
+                catch(const std::exception& error){throw std::runtime_error("translation_patch "+resource.entry.name+" offset="+std::to_string(element.b)+" encoding="+*patch.encoding()+": "+error.what());}
+            }
+        }
+        ++scripts;
     }
     if(matched!=patch.size())throw std::runtime_error("translation_patch contains "+std::to_string(patch.size()-matched)+" unmatched entries");
     std::cout<<"translation_patch valid scripts="<<scripts<<" entries="<<matched<<'\n';return 0;

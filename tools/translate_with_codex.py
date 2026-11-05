@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import threading
+from translation_encoding import compatible_translation
 
 JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 CONTROL = re.compile(r"@r\((\d+),([^)]*)\)")
@@ -17,7 +18,7 @@ PIT_PREFIX = "yks\\pit\\"
 
 
 def normalize_translation(_source, target):
-    return target
+    return compatible_translation(target)
 
 
 def is_translatable(row):
@@ -37,7 +38,8 @@ def controls_valid(source, target):
     for left, right in zip(original, translated):
         if left.group(1) != right.group(1):
             return False
-        if set(left.group(2)) == {"・"} and left.group(0) != right.group(0):
+        if (set(left.group(2)) == {"・"} and
+                compatible_translation(left.group(0)) != right.group(0)):
             return False
     return True
 
@@ -143,6 +145,7 @@ def write_patch(rows, translations, path):
         target = translations.get(row["source"])
         if target is None or not is_translatable(row):
             continue
+        target = compatible_translation(target)
         script, offset = row["id"].rsplit("#str:", 1)
         records.append("\t".join((hex_text(script), offset, hex_text(row["source"]), hex_text(target))))
         covered += 1

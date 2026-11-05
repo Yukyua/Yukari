@@ -3,6 +3,7 @@
 import argparse
 import csv
 from pathlib import Path
+from translation_encoding import compatible_translation
 
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('csv',type=Path)
@@ -14,6 +15,10 @@ with a.csv.open(encoding='utf-8-sig',newline='') as f:
     for r in csv.DictReader(f):
         if not r['translation']: continue
         script,offset=r['id'].rsplit('#str:',1)
-        rows.append('\t'.join((script.encode().hex(),offset,r['source'].encode().hex(),r['translation'].encode().hex())))
+        try:
+            translation = compatible_translation(r['translation'], a.encoding)
+        except UnicodeEncodeError as error:
+            raise ValueError(f"{r['id']}: translation cannot be encoded as {a.encoding}") from error
+        rows.append('\t'.join((script.encode().hex(),offset,r['source'].encode().hex(),translation.encode().hex())))
 a.output.write_text(f'YUKARI_TRANSLATION_PATCH_1\n@encoding\t{a.encoding}\n'+'\n'.join(rows)+'\n',encoding='utf-8')
 print(f'{len(rows)} translated literals')
